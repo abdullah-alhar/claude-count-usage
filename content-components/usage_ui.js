@@ -820,6 +820,27 @@ class UsageUI {
 	// ========== UPDATE LOOP ==========
 
 	startUpdateLoop() {
+		// Debounced mount — only re-insert elements when the DOM actually
+		// needs it, not on every tick. Prevents the up/down glitch.
+		let mountPending = false;
+		const scheduledMount = () => {
+			if (mountPending) return;
+			mountPending = true;
+			requestAnimationFrame(() => {
+				mountPending = false;
+				this.mountSidebar();
+				this.mountChatArea();
+			});
+		};
+
+		// Watch for layout shifts so we can re-anchor after Claude re-renders
+		const domObserver = new MutationObserver(() => scheduledMount());
+		domObserver.observe(document.body, { childList: true, subtree: true });
+
+		// Initial mount
+		scheduledMount();
+
+		// Separate 1-second tick for counters / model checks only — no DOM moves here
 		const update = async (timestamp) => {
 			if (timestamp - this.lastUpdateTime >= this.updateInterval) {
 				this.lastUpdateTime = timestamp;
@@ -827,9 +848,6 @@ class UsageUI {
 				this.checkExpiredLimits();
 				this.checkModelChange();
 				this.checkPeakHoursChange();
-				this.checkQoLInstalled();
-				this.mountSidebar();
-				this.mountChatArea();
 			}
 			requestAnimationFrame(update);
 		};
