@@ -133,11 +133,11 @@ fi
 
 echo ""
 echo -e "${BOLD}================================================${NC}"
-echo -e "${GREEN}${BOLD}   Installation complete! 🎉                  ${NC}"
+echo -e "${GREEN}${BOLD}   Installation complete!                  ${NC}"
 echo -e "${BOLD}================================================${NC}"
 echo ""
 echo "What to look for:"
-echo "  • Left sidebar  → 'Usage' with Session + Weekly bars (no Ko-fi)"
+echo "  • Left sidebar  → 'Usage' with Session + Weekly bars "
 echo "  • Open any chat → token / cost / cache stats below the heading"
 echo ""
 echo "To uninstall: double-click  uninstall.command"

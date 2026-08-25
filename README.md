@@ -38,48 +38,47 @@ Length*: 33,868 tokens  |  Cost: 210 credits  |  Cached for: 60m
 
 ## Installation
 
-### Chrome / Edge / Brave
+### Mac — Claude Desktop App
 
-1. Open `chrome://extensions`
+**Requires:** The Claude Desktop Launcher *(by Abdullah Alhar)* — download from the [Releases page](https://github.com/abdullahalhar/claude-count-usage/releases) and run it once first.
+
+1. Open Finder → go to the `claude-count-usage` folder
+2. Double-click **`install.command`**
+3. If Mac asks *"Are you sure?"* → click **Open**
+4. Terminal opens and runs automatically — Claude restarts when done
+
+**To uninstall:** double-click `uninstall.command`
+
+---
+
+### Windows — Claude Desktop App
+
+**Requires:** Node.js ([nodejs.org](https://nodejs.org)) + the Claude Desktop Launcher *(by Abdullah Alhar)* — download from the [Releases page](https://github.com/abdullahalhar/claude-count-usage/releases) and run it once first.
+
+1. Open the `claude-count-usage` folder
+2. Double-click **`install.bat`**
+3. Follow the prompts — Claude restarts when done
+
+**To uninstall:** double-click `uninstall.bat`
+
+---
+
+### Browser (Chrome / Edge / Brave)
+
+1. Go to `chrome://extensions`
 2. Enable **Developer Mode** (top-right toggle)
-3. Click **Load unpacked**
-4. Select the `claude-count-usage` folder
-5. Go to [claude.ai](https://claude.ai) — the sidebar bars and top stats appear automatically
-
-### Firefox
-
-1. Open `about:addons` → click the ⚙ gear → **Debug Add-ons**
-2. Click **Load Temporary Add-on**
-3. Select the `manifest.json` file inside `claude-count-usage`
+3. Click **Load unpacked** → select the `claude-count-usage` folder
+4. Go to [claude.ai](https://claude.ai)
 
 ---
 
-### Mac Claude Desktop App
+## Features
 
-The Claude Mac app runs on **Electron (Chromium)** — extensions are sideloaded via a patcher tool.
-
-> **Patcher tool download link** — *(add your patcher release link here)*
-
-**Steps:**
-1. Download the patcher for **macOS**
-2. Run it and point it to the `claude-count-usage` folder
-   - It automatically uses `manifest_electron.json`
-3. Restart the Claude desktop app
-4. Usage bars appear in the sidebar 
-
----
-
-### Windows Claude Desktop App
-
-Same Electron engine as Mac — works identically.
-
-> **Patcher tool download link** — *(add your patcher release link here)*
-
-**Steps:**
-1. Download the patcher for **Windows**
-2. Run it and point it to the `claude-count-usage` folder
-3. Restart the Claude desktop app
-4. Usage bars appear in the sidebar 
+| Feature | Status |
+|---|---|
+| Session (5h) usage bar |
+| Weekly usage bar |
+| Top-bar token / cost / cache stats |
 
 ---
 
@@ -111,16 +110,7 @@ UI injected into the page
 
 ---
 
-## Features
 
-| Feature | Status |
-|---|---|
-| Session (5h) usage bar |
-| Weekly usage bar |
-| Top-bar token / cost / cache stats |
-
-
----
 
 ## Privacy
 
