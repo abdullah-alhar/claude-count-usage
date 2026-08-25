@@ -1,17 +1,17 @@
 #!/bin/bash
 
 # =============================================================
-#  Claude Count Usage — Mac Desktop UNINSTALLER
+#  Claude Count Usage — UNINSTALLER
 #  Created by Abdullah Alhar
 #
-#  HOW TO USE:
-#    Double-click this file in Finder.
-#    It restores Claude to its original state.
+#  Restores the original usage-tracker extension and
+#  removes Claude Count Usage.
 # =============================================================
 
-CLAUDE_APP="/Applications/Claude.app"
-ASAR_PATH="$CLAUDE_APP/Contents/Resources/app.asar"
-BACKUP_PATH="$CLAUDE_APP/Contents/Resources/app.asar.original"
+LAUNCHER_EXTENSIONS="$HOME/Library/Application Support/Claude WebExtension Launcher/web-extensions"
+LAUNCHER_APP="$HOME/Library/Application Support/Claude WebExtension Launcher/app-latest/Claude.app"
+INSTALLED_EXT="$LAUNCHER_EXTENSIONS/usage-tracker"
+BACKUP="$LAUNCHER_EXTENSIONS/usage-tracker-original-backup"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -23,7 +23,7 @@ NC='\033[0m'
 log()  { echo -e "${GREEN}✅  $1${NC}"; }
 warn() { echo -e "${YELLOW}⚠️   $1${NC}"; }
 info() { echo -e "${BLUE}ℹ️   $1${NC}"; }
-fail() { echo -e "${RED}❌  ERROR: $1${NC}"; echo ""; echo "Press Enter to close."; read; exit 1; }
+fail() { echo -e "${RED}❌  $1${NC}"; echo ""; echo "Press Enter to close."; read; exit 1; }
 
 clear
 echo ""
@@ -33,37 +33,33 @@ echo -e "${BOLD}  by Abdullah Alhar                            ${NC}"
 echo -e "${BOLD}================================================${NC}"
 echo ""
 
-# Check backup exists
-if [ ! -f "$BACKUP_PATH" ]; then
-  fail "No backup found at:\n  $BACKUP_PATH\n\nEither the extension was never installed, or the backup was deleted."
+# Check there's something to uninstall
+[ -d "$LAUNCHER_EXTENSIONS" ] || fail "Launcher extensions folder not found.\nNothing to uninstall."
+
+info "Removing Claude Count Usage extension..."
+rm -rf "$INSTALLED_EXT"
+log "Extension removed"
+
+if [ -d "$BACKUP" ]; then
+  info "Restoring original usage-tracker..."
+  cp -r "$BACKUP" "$INSTALLED_EXT"
+  rm -rf "$BACKUP"
+  log "Original usage-tracker restored"
+else
+  warn "No backup found — original usage-tracker was not restored."
+  warn "You can reinstall it by running the Claude WebExtension Launcher again."
 fi
-
-info "Restoring original app.asar from backup..."
-cp "$BACKUP_PATH" "$ASAR_PATH" || fail "Could not restore backup.\nTry running with sudo: sudo bash '$0'"
-log "Original app.asar restored"
-
-info "Removing backup file..."
-rm -f "$BACKUP_PATH"
-log "Backup removed"
-
-info "Removing code signature (required after restore)..."
-codesign --remove-signature "$CLAUDE_APP" 2>/dev/null || true
-codesign --remove-signature "$CLAUDE_APP/Contents/MacOS/Claude" 2>/dev/null || true
-log "Code signature removed"
 
 info "Restarting Claude..."
 pkill -x "Claude" 2>/dev/null || true
-sleep 2
-open "$CLAUDE_APP"
+sleep 1
+[ -d "$LAUNCHER_APP" ] && open "$LAUNCHER_APP"
 log "Claude launched"
 
 echo ""
 echo -e "${BOLD}================================================${NC}"
 echo -e "${GREEN}${BOLD}   Uninstall complete!                        ${NC}"
 echo -e "${BOLD}================================================${NC}"
-echo ""
-echo "Claude Count Usage has been removed."
-echo "Claude is now running in its original state."
 echo ""
 echo "Press Enter to close this window."
 read
