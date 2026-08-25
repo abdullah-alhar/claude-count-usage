@@ -30,7 +30,7 @@ Length*: 33,868 tokens  |  Cost: 210 credits  |  Cached for: 60m
 
 ## Download & Installation
 
-### 🍎 Mac — Claude Desktop App
+### Mac — Claude Desktop App
 
 **Requires:** The Claude Desktop Launcher *(by Abdullah Alhar)*
 👉 **[Download Mac Launcher](https://github.com/abdullah-alhar/claude-count-usage/releases/tag/Mac)**
@@ -45,7 +45,7 @@ Length*: 33,868 tokens  |  Cost: 210 credits  |  Cached for: 60m
 
 ---
 
-### 🪟 Windows — Claude Desktop App
+###  Windows — Claude Desktop App
 
 **Requires:** The Claude Desktop Launcher *(by Abdullah Alhar)* + [Node.js](https://nodejs.org)
 👉 **[Download Windows Launcher](https://github.com/abdullah-alhar/claude-count-usage/releases/tag/windows)**
@@ -120,6 +120,3 @@ UI injected into the page
 
 ---
 
-## License
-
-MIT — see [LICENSE](LICENSE) if included.
