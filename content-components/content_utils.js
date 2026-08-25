@@ -1,0 +1,1022 @@
+/* global localize, fmtNum, normalizeLocale, setLocaleOverride,
+   modelFamilyFromVersion, defaultModelForTier, defaultModelVersionForTier */
+'use strict';
+
+// Constants
+const BLUE_HIGHLIGHT = "#2c84db";
+const RED_WARNING = "#de2929";
+const SUCCESS_GREEN = "#22c55e";
+
+const SELECTORS = {
+	MODEL_PICKER: '[data-testid="model-selector-dropdown"]',
+	CHAT_MENU: '[data-testid="chat-title-split"]',
+	MODEL_SELECTOR: '[data-testid="model-selector-dropdown"]',
+	INIT_LOGIN_SCREEN: 'button[data-testid="login-with-google"]',
+	VERIF_LOGIN_SCREEN: 'input[data-testid="code"]'
+};
+// Dynamic debug setting - will be loaded from storage
+let FORCE_DEBUG = true;
+// Load FORCE_DEBUG from storage and set up error handlers
+browser.storage.local.get('force_debug').then(result => {
+	FORCE_DEBUG = result.force_debug || false;
+
+	// Set up error logging based on debug setting
+	if (!FORCE_DEBUG) {
+		window.addEventListener('error', async function (event) {
+			await logError(event.error);
+
+		});
+
+		window.addEventListener('unhandledrejection', async function (event) {
+			await logError(event.reason);
+
+		});
+
+		self.onerror = async function (message, source, lineno, colno, error) {
+			await logError(error);
+			return false;
+		};
+	}
+});
+
+// Global variables that will be shared across all content scripts
+let CONFIG;
+
+// Debug logs are buffered in memory and flushed on a short debounce so logging (which happens inside
+// the per-frame update loop) never blocks on storage. Up to ~1s of logs can be lost on navigation.
+let pendingLogEntries = [];
+let logFlushScheduled = false;
+
+function scheduleLogFlush() {
+	if (logFlushScheduled) return;
+	logFlushScheduled = true;
+	setTimeout(flushLogs, 1000);
+}
+
+async function flushLogs() {
+	logFlushScheduled = false;
+	if (pendingLogEntries.length === 0) return;
+	const batch = pendingLogEntries;
+	pendingLogEntries = [];
+	// Read fresh and append so we don't clobber logs written by other contexts (background / other tabs).
+	try {
+		const result = await browser.storage.local.get('debug_logs');
+		const logs = result.debug_logs || [];
+		logs.push(...batch);
+		while (logs.length > 1000) logs.shift();
+		await browser.storage.local.set({ debug_logs: logs });
+	} catch (e) {
+		try {
+			await browser.storage.local.set({ debug_logs: batch.slice(-100) });
+		} catch (e2) {
+			// Give up — never let logging throw.
+		}
+	}
+}
+
+// Logging function
+async function Log(...args) {
+	const sender = `content:${document.title.substring(0, 20)}${document.title.length > 20 ? '...' : ''}`;
+	let level = "debug";
+
+	// If first argument is a valid log level, use it and remove it from args
+	if (typeof args[0] === 'string' && ["debug", "warn", "error"].includes(args[0])) {
+		level = args.shift();
+	}
+
+	// Gate: when FORCE_DEBUG is off, only log within the debug window. When on, skip the storage read.
+	if (!FORCE_DEBUG) {
+		const result = await browser.storage.local.get('debug_mode_until');
+		const debugUntil = result.debug_mode_until;
+		if (!debugUntil || debugUntil <= Date.now()) return;
+	}
+
+	if (level === "warn") {
+		console.warn("[UsageTracker]", ...args);
+	} else if (level === "error") {
+		console.error("[UsageTracker]", ...args);
+	} else {
+		console.log("[UsageTracker]", ...args);
+	}
+
+	const timestamp = new Date().toLocaleString('default', {
+		hour: '2-digit',
+		minute: '2-digit',
+		second: '2-digit',
+		hour12: false,
+		fractionalSecondDigits: 3
+	});
+
+	let message = args.map(arg => {
+		if (arg instanceof Error) {
+			return arg.stack || `${arg.name}: ${arg.message}`;
+		}
+		if (typeof arg === 'object') {
+			// Handle null case
+			if (arg === null) return 'null';
+			// For other objects, try to stringify with error handling
+			try {
+				return JSON.stringify(arg, Object.getOwnPropertyNames(arg), 2);
+			} catch (e) {
+				return String(arg);
+			}
+		}
+		return String(arg);
+	}).join(' ');
+
+	// Cap per-entry size so a large payload can't bloat storage past quota.
+	const MAX_LOG_MESSAGE = 2000;
+	if (message.length > MAX_LOG_MESSAGE) {
+		message = message.slice(0, MAX_LOG_MESSAGE) + `…[truncated ${message.length - MAX_LOG_MESSAGE} chars]`;
+	}
+
+	// Buffer + debounced flush — no awaited storage I/O in the caller's path.
+	pendingLogEntries.push({ timestamp, sender, level, message });
+	if (pendingLogEntries.length > 1000) pendingLogEntries.shift();
+	scheduleLogFlush();
+}
+
+async function logError(error) {
+	// If object is not an error, log it as a string
+	if (!(error instanceof Error)) {
+		await Log("error", JSON.stringify(error));
+		return
+	}
+
+	await Log("error", error.toString());
+	if ("captureStackTrace" in Error) {
+		Error.captureStackTrace(error, logError);
+	}
+	await Log("error", JSON.stringify(error.stack));
+}
+
+// Utility functions
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+function isIncognitoConversation() {
+	return new URLSearchParams(window.location.search).has('incognito');
+}
+
+function getConversationId() {
+	if (isIncognitoConversation()) {
+		try {
+			const data = JSON.parse(sessionStorage.getItem('incognito_temporary_conversation_uuid'));
+			return data?.uuid || null;
+		} catch {
+			return null;
+		}
+	}
+	const match = window.location.pathname.match(/\/chat\/([^/?]+)/);
+	return match ? match[1] : null;
+}
+
+function getActiveOrgId() {
+	return document.cookie.split('; ').find(row => row.startsWith('lastActiveOrg='))?.split('=')[1] || null;
+}
+
+async function sendBackgroundMessage(message) {
+	const enrichedMessage = {
+		...message,
+		orgId: getActiveOrgId()
+	};
+	let counter = 10;
+	while (counter > 0) {
+		try {
+			const response = await browser.runtime.sendMessage(enrichedMessage);
+			return response;
+		} catch (error) {
+			// Check if it's the specific "receiving end does not exist" error
+			if (error.message?.includes('Receiving end does not exist')) {
+				await Log("warn", 'Background script not ready, retrying...', error);
+				await sleep(200);
+			} else {
+				// For any other error, throw immediately
+				throw error;
+			}
+		}
+		counter--;
+	}
+	throw new Error("Failed to send message to background script after 10 retries.");
+}
+
+// Encode bytes as base64 (chunked to avoid stack overflow on large file downloads). Used to ship
+// proxyFetch response bodies back to the background, which rebuilds a Response from them.
+function bytesToBase64(buffer) {
+	const bytes = new Uint8Array(buffer);
+	let binary = '';
+	const chunk = 0x8000;
+	for (let i = 0; i < bytes.length; i += chunk) {
+		binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+	}
+	return btoa(binary);
+}
+
+// Brave hides containers from extension APIs, so the background can't read this container's cookies.
+// Tell it whether we're on Brave; if so, it proxies claude.ai fetches back through this tab.
+async function reportBraveStatus() {
+	try {
+		const isBrave = !!(navigator.brave && typeof navigator.brave.isBrave === 'function' && await navigator.brave.isBrave());
+		await sendBackgroundMessage({ type: 'reportBrave', isBrave });
+	} catch (e) {
+		await Log("warn", "Brave detection failed:", e);
+	}
+}
+
+async function waitForElement(target, selector, maxTime = 1000) {
+	let elapsed = 0;
+	const waitInterval = 100
+	while (elapsed < maxTime) {
+		const element = target.querySelector(selector);
+		if (element) return element;
+		await sleep(waitInterval);
+		elapsed += waitInterval;
+	}
+
+	return null;
+}
+
+// subscriptionTier decides the default when the picker can't be read - claude.ai defaults
+// Max to Opus and everyone else to Sonnet. Pass null if the tier isn't known yet.
+async function getCurrentModel(maxWait = 3000, subscriptionTier = null) {
+	const modelSelector = await waitForElement(document, SELECTORS.MODEL_PICKER, maxWait);
+	if (!modelSelector) return defaultModelForTier(subscriptionTier);
+
+	const fullModelName = modelSelector.querySelector('.whitespace-nowrap')?.textContent?.trim();
+	if (!fullModelName) return defaultModelForTier(subscriptionTier);
+
+	const matchedModel = modelFamilyFromVersion(fullModelName);
+	if (matchedModel) return matchedModel;
+
+	await Log("Could not find matching model, returning default")
+	return defaultModelForTier(subscriptionTier);
+}
+
+async function getCurrentModelVersion(maxWait = 3000, subscriptionTier = null) {
+	const modelSelector = await waitForElement(document, SELECTORS.MODEL_PICKER, maxWait);
+	if (!modelSelector) return defaultModelVersionForTier(subscriptionTier);
+	const text = modelSelector.querySelector('.whitespace-nowrap')?.textContent?.trim();
+    if (!text) return defaultModelVersionForTier(subscriptionTier);
+    const normalizedText = text.toLowerCase();
+    const matchedModel = Object.keys(CONFIG.MODEL_VERSION_MAP).find(key => normalizedText.startsWith(key));
+	return matchedModel ? CONFIG.MODEL_VERSION_MAP[matchedModel] : defaultModelVersionForTier(subscriptionTier);
+}
+
+function isMobileView() {
+	return matchMedia('(pointer: coarse)').matches && window.innerWidth < 768;
+}
+
+function isCodePage() {
+	return window.location.pathname.includes('claude-code-desktop') || window.location.pathname.includes('/code');
+}
+
+
+// Which pieces of the sidebar section the user wants shown. Purely content-side UI state — the
+// background never reads it — so it lives in storage.local directly, like usageSectionCollapsed.
+// Keys are limit keys ('session', 'weekly', 'fableWeekly', 'extraUsage') plus 'desktopLink'.
+// A missing key means visible, so an empty object is the default "show everything".
+const SIDEBAR_DISPLAY_KEY = 'sidebarDisplay';
+
+async function getSidebarDisplayPrefs() {
+	const stored = await browser.storage.local.get(SIDEBAR_DISPLAY_KEY);
+	const prefs = stored[SIDEBAR_DISPLAY_KEY];
+	return (prefs && typeof prefs === 'object') ? prefs : {};
+}
+
+// Written whole, once, when the settings card is saved — never per-checkbox, so there is no
+// read-modify-write for concurrent edits to race over.
+async function setSidebarDisplayPrefs(prefs) {
+	await browser.storage.local.set({ [SIDEBAR_DISPLAY_KEY]: prefs });
+}
+
+function isSidebarItemVisible(prefs, key) {
+	return prefs[key] !== false;
+}
+
+
+// Pin the active UI locale and persist it as lastLang so the popup and background (which have
+// no claude.ai DOM) can localize too. Normally fetched from /api/account_profile at boot. But
+// right after a language change, the background pins the authoritative value (from the PUT body)
+// with a short TTL — within that window we trust it and skip the GET, because the GET can briefly
+// lag behind the change. Falls back to the stored value, then English.
+async function applyLocale() {
+	const stored = await browser.storage.local.get(['lastLang', 'lastLangPinnedUntil', 'languageOverride']);
+	let norm;
+	if (stored.languageOverride) {
+		// Explicit user choice wins over everything: skip the account fetch and the PUT pin.
+		norm = normalizeLocale(stored.languageOverride);
+	} else if (stored.lastLangPinnedUntil && Date.now() < stored.lastLangPinnedUntil) {
+		norm = normalizeLocale(stored.lastLang || 'en');
+	} else {
+		const acc = await sendBackgroundMessage({ type: 'getAccountLocale' });
+		norm = normalizeLocale(acc || stored.lastLang || 'en');
+	}
+	setLocaleOverride(norm);
+	await browser.storage.local.set({ lastLang: norm });
+}
+
+function getResetTimeHTML(timeInfo) {
+	const prefix = localize('reset.prefix');
+
+	if (!timeInfo || !timeInfo.timestamp || timeInfo.expired) {
+		return `${prefix} <span>${localize('reset.not_set')}</span>`;
+	}
+
+	const now = Date.now();
+	const diff = timeInfo.timestamp - now;
+
+	// Convert to seconds and round to nearest minute
+	const totalMinutes = Math.round(diff / (1000 * 60));
+
+	if (totalMinutes === 0) {
+		return `${prefix} <span style="color: ${BLUE_HIGHLIGHT}">${localize('reset.under_1m')}</span>`;
+	}
+
+	const hours = Math.floor(totalMinutes / 60);
+	const minutes = totalMinutes % 60;
+
+	const timeString = hours > 0 ? localize('time.hm', { h: hours, m: minutes }) : localize('time.m', { m: totalMinutes });
+
+	return `${prefix} <span style="color: ${BLUE_HIGHLIGHT}">${timeString}</span>`;
+}
+
+// Tooltips use the CDS color vars (--cds-tooltip-bg/-fg), which are scoped to .cds-root.
+// Append them into a dedicated portal so the vars resolve outside claude.ai's own roots.
+let _tooltipPortal = null;
+function getTooltipPortal() {
+	if (_tooltipPortal && _tooltipPortal.isConnected) return _tooltipPortal;
+
+	const existing = document.querySelector('.cds-root[data-cds-portal]');
+	if (existing) {
+		_tooltipPortal = existing;
+		return _tooltipPortal;
+	}
+
+	const reference = document.querySelector('.cds-root');
+	const portal = document.createElement('div');
+	portal.className = 'cds-root pointer-events-none';
+	portal.setAttribute('data-cds-portal', '');
+
+	if (reference) {
+		for (const attr of ['data-density', 'data-mode', 'data-platform', 'data-font']) {
+			const val = reference.getAttribute(attr);
+			if (val) portal.setAttribute(attr, val);
+		}
+	}
+
+	document.body.appendChild(portal);
+	_tooltipPortal = portal;
+	return _tooltipPortal;
+}
+
+function setupTooltip(element, tooltip, options = {}) {
+	if (!element || !tooltip) return;
+
+	// Check if already set up
+	if (element.hasAttribute('data-tooltip-setup')) {
+		return;
+	}
+	element.setAttribute('data-tooltip-setup', 'true');
+
+	const { topOffset = 10 } = options;
+
+	// Add standard classes for all tooltip elements
+	element.classList.add('ut-tooltip-trigger', 'ut-info-item');
+	element.style.cursor = 'help';
+
+
+	let pressTimer;
+	let tooltipHideTimer;
+
+	const showTooltip = () => {
+		const rect = element.getBoundingClientRect();
+		tooltip.style.opacity = '1';
+		const tooltipRect = tooltip.getBoundingClientRect();
+
+		let leftPos = rect.left + (rect.width / 2);
+		if (leftPos + (tooltipRect.width / 2) > window.innerWidth) {
+			leftPos = window.innerWidth - tooltipRect.width - 10;
+		}
+		if (leftPos - (tooltipRect.width / 2) < 0) {
+			leftPos = tooltipRect.width / 2 + 10;
+		}
+
+		let topPos = rect.top - tooltipRect.height - topOffset;
+		if (topPos < 10) {
+			topPos = rect.bottom + 10;
+		}
+
+		tooltip.style.left = `${leftPos}px`;
+		tooltip.style.top = `${topPos}px`;
+		tooltip.style.transform = 'translateX(-50%)';
+	};
+
+	const hideTooltip = () => {
+		tooltip.style.opacity = '0';
+		clearTimeout(tooltipHideTimer);
+	};
+
+	// Pointer events work for both mouse and touch
+	element.addEventListener('pointerdown', (e) => {
+
+		if (e.pointerType === 'touch' || isMobileView()) {
+			// Touch/mobile: long press
+			pressTimer = setTimeout(() => {
+				showTooltip();
+
+				// Auto-hide after 3 seconds
+				tooltipHideTimer = setTimeout(hideTooltip, 3000);
+			}, 500);
+		}
+		// Mouse is handled by enter/leave below
+	});
+
+	element.addEventListener('pointerup', (e) => {
+		if (e.pointerType === 'touch' || isMobileView()) {
+			clearTimeout(pressTimer);
+		}
+	});
+
+	element.addEventListener('pointercancel', (e) => {
+		clearTimeout(pressTimer);
+		hideTooltip();
+	});
+
+	// Keep mouse hover for desktop
+	if (!isMobileView()) {
+		element.addEventListener('pointerenter', (e) => {
+			if (e.pointerType === 'mouse') {
+				showTooltip();
+			}
+		});
+
+		element.addEventListener('pointerleave', (e) => {
+			if (e.pointerType === 'mouse') {
+				hideTooltip();
+			}
+		});
+	}
+}
+
+// Progress bar component
+class ProgressBar {
+	constructor(options = {}) {
+		const {
+			width = '100%',
+			height = '6px'
+		} = options;
+
+		this.container = document.createElement('div');
+		this.container.className = 'ut-progress';
+		if (width !== '100%') this.container.style.width = width;
+
+		this.track = document.createElement('div');
+		this.track.className = 'bg-bg-500 ut-progress-track';
+		if (height !== '6px') this.track.style.height = height;
+
+		this.bar = document.createElement('div');
+		this.bar.className = 'ut-progress-bar';
+		this.bar.style.background = BLUE_HIGHLIGHT;
+
+		this.tooltip = document.createElement('div');
+		this.tooltip.className = 'bg-[var(--cds-tooltip-bg)] text-[var(--cds-tooltip-fg)] ut-tooltip shadow-sm dark:shadow-panel-sm';
+
+		this.track.appendChild(this.bar);
+		this.container.appendChild(this.track);
+		getTooltipPortal().appendChild(this.tooltip);
+		setupTooltip(this.container, this.tooltip, { topOffset: 10 });
+	}
+
+	updateProgress(total, maxTokens) {
+		const percentage = (total / maxTokens) * 100;
+		this.bar.style.width = `${Math.min(percentage, 100)}%`;
+		this.bar.style.background = total >= maxTokens * CONFIG.WARNING.PERCENT_THRESHOLD ? RED_WARNING : BLUE_HIGHLIGHT;
+		this.tooltip.textContent = localize('usage.bar_credits', { used: fmtNum(total), total: fmtNum(maxTokens), pct: percentage.toFixed(1) });
+	}
+
+	setMarker(percentage, label) {
+		if (!this.marker) {
+			this.marker = document.createElement('div');
+			this.marker.className = 'ut-weekly-marker';
+			this.marker.style.setProperty('--marker-color', RED_WARNING);
+			this.container.style.paddingTop = '10px';
+			this.container.style.marginTop = '-10px';
+			this.container.appendChild(this.marker);
+
+			this.markerTooltip = document.createElement('div');
+			this.markerTooltip.className = 'bg-[var(--cds-tooltip-bg)] text-[var(--cds-tooltip-fg)] ut-tooltip shadow-sm dark:shadow-panel-sm';
+			getTooltipPortal().appendChild(this.markerTooltip);
+			setupTooltip(this.marker, this.markerTooltip);
+		}
+		this.marker.style.left = `${Math.min(percentage, 100)}%`;
+		this.marker.style.display = 'block';
+		if (label) this.markerTooltip.textContent = label;
+	}
+
+	clearMarker() {
+		if (this.marker) {
+			this.marker.style.display = 'none';
+			this.container.style.paddingTop = '';
+			this.container.style.marginTop = '';
+		}
+	}
+}
+
+// Message handlers for background script requests
+browser.runtime.onMessage.addListener(async (message) => {
+	if (message.type === 'getActiveModel') {
+		return await getCurrentModel();
+	}
+	if (message.action === "getOrgID") {
+		return Promise.resolve({ orgId: getActiveOrgId() });
+	}
+	if (message.type === 'proxyFetch') {
+		// Brave: perform a fetch in this tab's container context and ship the result to the background.
+		try {
+			const r = await fetch(message.url, { ...(message.options || {}), credentials: 'include' });
+			const buf = await r.arrayBuffer();
+			return { ok: r.ok, status: r.status, statusText: r.statusText, body: bytesToBase64(buf) };
+		} catch (e) {
+			await Log("error", "proxyFetch failed:", message.url, e);
+			return { ok: false, status: 0, statusText: String(e), body: '' };
+		}
+	}
+});
+
+// Style injection
+async function injectStyles() {
+	if (document.getElementById('ut-styles')) return;
+	try {
+		const cssContent = await fetch(browser.runtime.getURL('tracker-styles.css')).then(r => r.text());
+		const style = document.createElement('link');
+		style.rel = 'stylesheet';
+		style.id = 'ut-styles';
+		style.href = `data:text/css;charset=utf-8,${encodeURIComponent(cssContent)}`;
+		document.head.appendChild(style);
+	} catch (error) {
+		await Log("error", 'Failed to load tracker styles:', error);
+	}
+}
+
+// ========== PAGE LAYOUTS ==========
+// Centralized layout detection and anchor resolution.
+// Each layout has match() to detect the page and anchors to find DOM insertion points.
+// Checked in order; first match() wins.
+
+function getSidebarRegularAnchor() {
+	const sidebarNav = document.querySelector('nav.flex');
+	if (!sidebarNav) return null;
+
+	const containerWrapper = sidebarNav.querySelector('.flex.flex-grow.flex-col.overflow-y-auto');
+	const containers = containerWrapper?.querySelectorAll('.flex-1.relative');
+	if (!containers) return null;
+
+	let mainContainer = containers[containers.length - 1].querySelector('.px-2.mt-4');
+	if (!mainContainer) mainContainer = containers[containers.length - 1].querySelector('.px-2.pt-2');
+	if (!mainContainer) return null;
+
+	const starredSection = mainContainer.querySelector('div.flex.flex-col.mb-4');
+	const prefSwitcher = mainContainer.querySelector('.preset-switcher-section');
+	const referenceNode = prefSwitcher || starredSection || mainContainer.firstChild || null;
+
+	return {
+		parent: mainContainer,
+		referenceNode,
+		classes: { remove: ['px-2'] },
+	};
+}
+
+function getSidebarDesktopAnchor() {
+	const sidebarBody = document.querySelector('.dframe-sidebar-body');
+	if (!sidebarBody) return null;
+
+	const navScroll = sidebarBody.querySelector('.dframe-nav-scroll');
+	if (!navScroll) return null;
+
+	// Mount INSIDE the scroll area, above the recents, rather than as a fixed block above it.
+	// Sitting outside meant our ~220px of bars ate the scroll area's flex basis: on a short
+	// viewport the recents collapsed to a few pixels and our own content overflowed onto the
+	// bottom tray, with no way to scroll any of it back. Inside, everything scrolls together.
+	// shrink-0 keeps the bars at full height instead of being squashed by the flex column.
+	const referenceNode = Array.from(navScroll.children)
+		.find(child => !child.classList.contains('ut-usage-sidebar')) || null;
+
+	return {
+		parent: navScroll,
+		referenceNode,
+		classes: { add: ['shrink-0'] },
+	};
+}
+
+function getChatAreaRegularAnchor() {
+	const modelSelector = document.querySelector(SELECTORS.MODEL_SELECTOR);
+	if (!modelSelector) return null;
+
+	const toolbarRow = modelSelector.closest('.flex.w-full.items-center');
+	if (!toolbarRow) return null;
+
+	return {
+		insertAfter: toolbarRow,
+		styles: { paddingLeft: '6px', paddingRight: '', paddingBottom: '' },
+	};
+}
+
+// The title line is a single element that gets re-anchored as the layout changes, and
+// in-page navigation (incognito <-> normal chat) can hand it from one anchor to another
+// without a reload. Every titleArea anchor therefore spreads this reset and states the
+// muted-text class explicitly, so nothing the previous anchor set can survive the move.
+const TITLE_AREA_STYLE_RESET = {
+	flexBasis: '',
+	marginTop: '',
+	marginLeft: '',
+	paddingLeft: '',
+	position: '',
+	top: '',
+	zIndex: '',
+	minWidth: '',
+	overflow: '',
+	whiteSpace: '',
+};
+
+// Mobile headers are position:absolute with a fixed height, so forcing our line onto a
+// second line inside them renders it outside the header, on top of the message list (and
+// pushes the page's own buttons out with it). The layout already reserves the header's
+// height as margin-top on the sibling scroll container, so take a strip of that instead:
+// sit between the two and carry the reservation on our own margin. When our line is empty
+// its height is 0, so the scroller ends up exactly where the original margin put it.
+function getMobileTitleAreaAnchor(headerRow) {
+	const container = headerRow?.parentElement;
+	const scroller = container?.querySelector(':scope > .overflow-y-auto.overflow-x-hidden');
+	if (!scroller) return null;
+
+	const headerHeight = Math.round(headerRow.getBoundingClientRect().height);
+	if (!headerHeight) return null;
+
+	// An older build forced a wrap here, which is what pushed the header's own controls out.
+	headerRow.classList.remove('flex-wrap');
+	scroller.style.marginTop = '0px';
+
+	return {
+		parent: container,
+		referenceNode: scroller,
+		styles: {
+			...TITLE_AREA_STYLE_RESET,
+			// Line up with the title's glyphs: the header's own padding, plus the 6px the
+			// title button insets its text by.
+			paddingLeft: `${(parseFloat(getComputedStyle(headerRow).paddingLeft) || 0) + 6}px`,
+			// The margin keeps the reservation intact (and stays correct when the line is
+			// empty); `top` does the tucking, so the scroller never creeps under the header.
+			marginTop: `${headerHeight}px`,
+			position: 'relative',
+			top: '-8px',
+			zIndex: '11', // above the header's gradient overlay
+		},
+		classes: { toggle: { 'text-text-500': true, 'bg-bg-100': false, '!px-2': false } },
+	};
+}
+
+// Hand the header-height reservation back to the scroll container. Needed when the view
+// stops being mobile (resize past the breakpoint, tablet rotation) - otherwise the offset
+// we moved onto our own element stays gone and the messages slide under the header.
+function clearMobileTitleAreaOffset(headerRow) {
+	const scroller = headerRow?.parentElement?.querySelector(':scope > .overflow-y-auto.overflow-x-hidden');
+	if (scroller?.style.marginTop) scroller.style.marginTop = '';
+}
+
+// How far the title's first glyph sits from the start of the title row.
+//
+// The title is a button that pokes out to the left with a negative offset and pads its text back
+// in, so its text does NOT start where the row does. Our line is a plain sibling with no such
+// padding, and used to hard-code 6px to match. claude.ai has since restyled that button - it now
+// sits 10px out with 10px of padding, i.e. an inset of 0 - so the constant became a 6px rightward
+// offset against the title. Measure it instead, and the alignment survives the next restyle.
+function getTitleTextInset(titleLine) {
+	const btn = titleLine?.querySelector('button');
+	if (!btn) return 0;
+	const wrapper = [...titleLine.children].find(child => child.contains(btn));
+	if (!wrapper) return 0;
+
+	const wrapperLeft = wrapper.getBoundingClientRect().left;
+	const btnRect = btn.getBoundingClientRect();
+	// Nothing is laid out yet (hidden tab, first paint) - 0 is the safe guess, and the anchor is
+	// recomputed on later passes anyway.
+	if (!btnRect.width) return 0;
+
+	const padding = parseFloat(getComputedStyle(btn).paddingLeft) || 0;
+	return Math.max(0, Math.round(btnRect.left + padding - wrapperLeft));
+}
+
+function getTitleAreaAnchor() {
+	const chatTitle = document.querySelector(SELECTORS.CHAT_MENU);
+	if (!chatTitle) return null;
+
+	const titleLine = chatTitle.closest('.flex-1') || chatTitle.parentElement;
+	if (!titleLine) return null;
+
+	const headerRow = titleLine.parentElement;
+
+	if (isMobileView()) {
+		return getMobileTitleAreaAnchor(headerRow);
+	} else {
+		clearMobileTitleAreaOffset(headerRow);
+		titleLine.classList.add('flex-wrap');
+
+		return {
+			parent: titleLine,
+			referenceNode: null,
+			styles: { ...TITLE_AREA_STYLE_RESET, flexBasis: '100%', paddingLeft: `${getTitleTextInset(titleLine)}px` },
+			classes: { toggle: { 'text-text-500': true } }
+		};
+	}
+}
+
+const pageLayouts = {
+	// Desktop client layouts (checked first — desktop has dframe-sidebar, not nav.flex)
+	desktopChat: {
+		match() { return !!document.querySelector('aside.dframe-sidebar') && !isCodePage() && !!getConversationId(); },
+		anchors: {
+			sidebar: getSidebarDesktopAnchor,
+			chatArea: getChatAreaRegularAnchor,
+			titleArea() {
+				const chatTitle = document.querySelector(SELECTORS.CHAT_MENU);
+				if (!chatTitle) return null;
+
+				const titleLine = chatTitle.closest('.font-base-bold') || chatTitle.parentElement;
+				if (!titleLine) return null;
+
+				const headerRow = titleLine.parentElement;
+
+				if (isMobileView()) {
+					return getMobileTitleAreaAnchor(headerRow);
+				} else {
+					clearMobileTitleAreaOffset(headerRow);
+					titleLine.classList.add('flex-wrap');
+
+					return {
+						parent: titleLine,
+						referenceNode: null,
+						styles: { ...TITLE_AREA_STYLE_RESET, flexBasis: '100%', paddingLeft: `${getTitleTextInset(titleLine)}px` },
+						classes: { toggle: { 'text-text-500': true } },
+					};
+				}
+			},
+		},
+	},
+	desktopCoworkHome: {
+		match() { return !!document.querySelector('aside.dframe-sidebar') && window.location.pathname === '/task/new'; },
+		anchors: {
+			sidebar: getSidebarDesktopAnchor,
+			chatArea() {
+				const chatInput = document.querySelector('[data-testid="chat-input"]');
+				if (!chatInput) return null;
+
+				const inputContainer = chatInput.closest('.flex.flex-col.gap-3');
+				if (!inputContainer) return null;
+
+				const toolbarRow = inputContainer.querySelector('.flex.w-full.items-center');
+				if (!toolbarRow) return null;
+
+				return {
+					insertAfter: toolbarRow,
+					styles: { paddingLeft: '6px', paddingRight: '', paddingBottom: '' },
+				};
+			},
+		},
+	},
+	desktopHome: {
+		match() { return !!document.querySelector('aside.dframe-sidebar') && !isCodePage() && !getConversationId(); },
+		anchors: {
+			sidebar: getSidebarDesktopAnchor,
+			chatArea: getChatAreaRegularAnchor,
+		},
+	},
+	// Web layouts
+	chat: {
+		match() { return !isCodePage() && !isIncognitoConversation() && !!getConversationId(); },
+		anchors: {
+			sidebar: getSidebarRegularAnchor,
+			chatArea: getChatAreaRegularAnchor,
+			titleArea: getTitleAreaAnchor,
+		},
+	},
+	code: {
+		match() { return isCodePage(); },
+		anchors: {
+			sidebar() {
+				const sidebarNav = document.querySelector('nav.flex');
+
+				if (sidebarNav) {
+					const scrollArea = sidebarNav.querySelector('.flex-grow.overflow-y-auto');
+					if (!scrollArea) return null;
+					return {
+						parent: scrollArea.parentElement,
+						referenceNode: scrollArea,
+						classes: { add: ['px-2'] },
+					};
+				}
+
+				// Standalone code sidebar (no nav element)
+				const codeLink = document.querySelector('a[href="/code"]');
+				if (!codeLink) return null;
+
+				const sidebarRoot = codeLink.closest('.flex.flex-col.h-full.bg-bg-100');
+				if (!sidebarRoot) return null;
+
+				const scrollArea = sidebarRoot.querySelector('.overflow-y-auto.overflow-x-hidden');
+				if (!scrollArea) return null;
+
+				const outerWrapper = scrollArea.parentElement.parentElement;
+				return {
+					parent: outerWrapper,
+					referenceNode: outerWrapper.firstElementChild,
+					classes: { add: ['px-2'] },
+				};
+			},
+			chatArea() {
+				const modelSelector = document.querySelector(SELECTORS.MODEL_SELECTOR);
+				if (!modelSelector) return null;
+
+				const toolbar = modelSelector.closest('.flex.items-center.p-2');
+				if (!toolbar) return null;
+
+				return {
+					insertAfter: toolbar,
+					styles: { paddingLeft: '8px', paddingRight: '8px', paddingBottom: '4px' },
+				};
+			},
+		},
+	},
+	incognitoConversation: {
+		// Incognito conversations have no convID in the URL and a special sessionStorage key for it instead, but otherwise behave like regular chats.
+		match() { return isIncognitoConversation(); },
+		anchors: {
+			sidebar: getSidebarRegularAnchor,
+			chatArea: getChatAreaRegularAnchor,
+			titleArea() {
+				// The label used to live under .z-header, which no longer exists - it now sits
+				// in a fixed title bar. Matched structurally rather than by its text: the layout
+				// is already gated on isIncognitoConversation(), so testing for "Incognito chat"
+				// bought nothing and broke in every locale but English.
+				const label = document.querySelector('.fixed.draggable > .text-sm.select-none');
+				if (!label) return null;
+
+				return {
+					insertAfter: label,
+					styles: {
+						...TITLE_AREA_STYLE_RESET,
+						// That bar is a fixed-height, nowrap flex row with room to spare, so sit
+						// inline beside the label instead of forcing a line it can't accommodate.
+						// min-width/overflow keep a long conversation from blowing the bar out.
+						minWidth: '0',
+						overflow: 'hidden',
+						whiteSpace: 'nowrap',
+					},
+					// Drop the muted class so the text inherits the bar's own colour - it themes
+					// independently of the page body.
+					classes: { toggle: { 'text-text-500': false, 'bg-bg-100': false } },
+				};
+			},
+		},
+	},
+	home: {
+		match() { return !isCodePage() && !getConversationId(); },
+		anchors: {
+			sidebar: getSidebarRegularAnchor,
+			chatArea: getChatAreaRegularAnchor,
+		},
+	},
+};
+
+const LayoutManager = {
+	detectLayout() {
+		for (const [name, layout] of Object.entries(pageLayouts)) {
+			if (layout.match()) return { name, ...layout };
+		}
+		return null;
+	},
+	getAnchor(anchorName) {
+		const layout = this.detectLayout();
+		const anchorFn = layout?.anchors?.[anchorName];
+		if (!anchorFn) return null;
+		return anchorFn();
+	},
+};
+
+function mountToAnchor(element, anchor) {
+	let needsInsert;
+	if (anchor.insertAfter) {
+		needsInsert = anchor.insertAfter.nextElementSibling !== element;
+	} else if (anchor.referenceNode) {
+		needsInsert = element.nextElementSibling !== anchor.referenceNode
+			|| element.parentElement !== anchor.parent;
+	} else {
+		// A null referenceNode means "last child", so check for that and not merely for parentage.
+		// Renaming a conversation re-renders the header and React puts the title back BEFORE our
+		// line, which leaves us still a child of the right parent but now the first one - the stats
+		// render above the title until a reload. Comparing parents alone can't see that.
+		needsInsert = element.parentElement !== anchor.parent || element.nextElementSibling !== null;
+	}
+
+	if (needsInsert) {
+		if (anchor.insertAfter) {
+			anchor.insertAfter.after(element);
+		} else {
+			anchor.parent.insertBefore(element, anchor.referenceNode || null);
+		}
+	}
+
+	if (anchor.styles) Object.assign(element.style, anchor.styles);
+	if (anchor.classes?.add) element.classList.add(...anchor.classes.add);
+	if (anchor.classes?.remove) element.classList.remove(...anchor.classes.remove);
+	if (anchor.classes?.toggle) {
+		for (const [cls, force] of Object.entries(anchor.classes.toggle)) {
+			element.classList.toggle(cls, force);
+		}
+	}
+	return true;
+}
+
+// Main initialization
+async function initExtension() {
+	if (window.claudeTrackerInstance) {
+		Log('Instance already running, stopping');
+		return;
+	}
+	window.claudeTrackerInstance = true;
+
+	// Report Brave status before any ClaudeAPI-backed call (e.g. getAccountLocale below) so the
+	// background knows to proxy claude.ai fetches through this tab's container.
+	await reportBraveStatus();
+
+	// Clean up any leftover UI elements from a previous instance (e.g. extension toggled off/on)
+	document.querySelectorAll('[class^="ut-"], [class*=" ut-"]').forEach(el => el.remove());
+	const oldStyles = document.getElementById('ut-styles');
+	if (oldStyles) oldStyles.remove();
+
+	await injectStyles();
+
+	// Resolve the account UI language and pin it BEFORE assigning CONFIG. UI scripts gate their
+	// construction on CONFIG, so pinning the locale first means every static string (sidebar
+	// header, tooltips) is built in the right language.
+	const cfg = await sendBackgroundMessage({ type: 'getConfig' });
+	await applyLocale();
+	CONFIG = cfg;
+	await Log("Config received...");
+
+	// Incognito conversations never have the standard sidebar structure.
+    // Skip the 6-second wait to avoid a spurious warning and wasted polling.
+    if (new URLSearchParams(window.location.search).has('incognito')) {
+        await Log('Incognito mode: skipping sidebar anchor wait');
+        sendBackgroundMessage({ type: 'requestData' });
+        sendBackgroundMessage({ type: 'initOrg' });
+        await Log('Initialization complete. Ready to track tokens.');
+        return;
+    }
+
+	// Wait for page to be ready (sidebar anchor available = logged in and DOM loaded)
+	const LOGIN_CHECK_DELAY = 10000;
+	while (true) {
+		let sidebarAnchor = null;
+		const maxWait = 6000;
+		const interval = 100;
+		let elapsed = 0;
+		while (elapsed < maxWait) {
+			sidebarAnchor = LayoutManager.getAnchor('sidebar');
+			if (sidebarAnchor) break;
+			await sleep(interval);
+			elapsed += interval;
+		}
+
+		if (sidebarAnchor) {
+			if (sidebarAnchor.parent.getAttribute('data-script-loaded')) {
+				await Log('Script already running, stopping duplicate');
+				return;
+			}
+			sidebarAnchor.parent.setAttribute('data-script-loaded', true);
+			break;
+		}
+
+		const initialLoginScreen = document.querySelector(SELECTORS.INIT_LOGIN_SCREEN);
+		const verificationLoginScreen = document.querySelector(SELECTORS.VERIF_LOGIN_SCREEN);
+		if (!initialLoginScreen && !verificationLoginScreen) {
+			await Log("warn", 'No sidebar anchor found and no login screen detected, proceeding anyway');
+			break;
+		}
+		await Log('Login screen detected, waiting before retry...');
+		await sleep(LOGIN_CHECK_DELAY);
+	}
+
+	// Request initial data
+	sendBackgroundMessage({ type: 'requestData' });
+	sendBackgroundMessage({ type: 'initOrg' });
+
+	await Log('Initialization complete. Ready to track tokens.');
+}
+
+// Self-initialize
+(async () => {
+	try {
+		await initExtension();
+	} catch (error) {
+		await Log("error", 'Failed to initialize Chat Token Counter:', error);
+	}
+})();
