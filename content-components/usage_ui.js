@@ -376,7 +376,7 @@ class UsageUI {
 		container.appendChild(header);
 		container.appendChild(content);
 
-		const elements = { container, content, toggle, desktopFooter };
+		const elements = { container, content, toggle };
 		toggle.addEventListener('click', () => this.setCollapsed(!this.state.collapsed));
 
 		return elements;
@@ -442,11 +442,7 @@ class UsageUI {
 			Object.keys(prefs).filter(key => key !== 'desktopLink' && !isSidebarItemVisible(prefs, key))
 		);
 
-		// Absent on Electron, where the footer is never built.
-		const desktopFooter = this.elements.sidebar?.desktopFooter;
-		if (desktopFooter) {
-			desktopFooter.style.display = isSidebarItemVisible(prefs, 'desktopLink') ? '' : 'none';
-		}
+		// No desktop/promotional footer in this build.
 
 		if (this.state.usageData) this.renderAll();
 	}

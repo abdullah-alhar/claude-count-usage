@@ -3,7 +3,7 @@
 	"name": "Claude Count Usage",
 	"version": "1.0.0",
 	"description": "Track your Claude.ai session and weekly usage. Shows usage bars in sidebar and token/cost/cache stats in the chat header. No telemetry. All data stays on your device.",
-	"author": "Custom",
+	"author": "Abdullah Alhar",
 	"background": {
 		"service_worker": "background.js",
 		"type": "module"
