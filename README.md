@@ -28,36 +28,32 @@ Length*: 33,868 tokens  |  Cost: 210 credits  |  Cached for: 60m
 
 ---
 
-## Download / Releases
+## Download & Installation
 
-👉 **[Download the latest release](https://github.com/abdullahalhar/claude-count-usage/releases/latest)**
+### 🍎 Mac — Claude Desktop App
 
-> Drop the release link here once you publish it on GitHub.
+**Requires:** The Claude Desktop Launcher *(by Abdullah Alhar)*
+👉 **[Download Mac Launcher](https://github.com/abdullah-alhar/claude-count-usage/releases/tag/Mac)**
 
----
-
-## Installation
-
-### Mac — Claude Desktop App
-
-**Requires:** The Claude Desktop Launcher *(by Abdullah Alhar)* — download from the [Releases page](https://github.com/abdullahalhar/claude-count-usage/releases) and run it once first.
-
-1. Open Finder → go to the `claude-count-usage` folder
-2. Double-click **`install.command`**
-3. If Mac asks *"Are you sure?"* → click **Open**
-4. Terminal opens and runs automatically — Claude restarts when done
+1. Install and run the launcher at least once.
+2. Open Finder → go to the `claude-count-usage` folder.
+3. Double-click **`install.command`**.
+4. If Mac asks *"Are you sure?"* → click **Open**.
+5. Terminal will open and run automatically — Claude restarts when done.
 
 **To uninstall:** double-click `uninstall.command`
 
 ---
 
-### Windows — Claude Desktop App
+### 🪟 Windows — Claude Desktop App
 
-**Requires:** Node.js ([nodejs.org](https://nodejs.org)) + the Claude Desktop Launcher *(by Abdullah Alhar)* — download from the [Releases page](https://github.com/abdullahalhar/claude-count-usage/releases) and run it once first.
+**Requires:** The Claude Desktop Launcher *(by Abdullah Alhar)* + [Node.js](https://nodejs.org)
+👉 **[Download Windows Launcher](https://github.com/abdullah-alhar/claude-count-usage/releases/tag/windows)**
 
-1. Open the `claude-count-usage` folder
-2. Double-click **`install.bat`**
-3. Follow the prompts — Claude restarts when done
+1. Install and run the launcher at least once.
+2. Open the `claude-count-usage` folder.
+3. Double-click **`install.bat`**.
+4. Follow the prompts — Claude restarts when done.
 
 **To uninstall:** double-click `uninstall.bat`
 
