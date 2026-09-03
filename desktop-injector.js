@@ -549,6 +549,7 @@ function generateWrapperSource(relativeMainPath) {
   return `'use strict';
 ${MARKER}
 // Claude Count Usage — Desktop Extension Injector & Event Bridge
+require('events').EventEmitter.defaultMaxListeners = 100;
 const { app, session, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');

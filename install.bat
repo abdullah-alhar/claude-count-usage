@@ -116,7 +116,8 @@ if not exist "%CLAUDE_EXE%" set "CLAUDE_EXE=%LOCALAPPDATA%\ClaudeDesktopInjector
 set "SHORTCUT=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Claude.lnk"
 
 if exist "%CLAUDE_EXE%" (
-    start "" "%CLAUDE_EXE%"
+    for %%I in ("%CLAUDE_EXE%") do set "EXE_DIR=%%~dpI"
+    start "" /d "!EXE_DIR!" "%CLAUDE_EXE%"
     echo [OK] Claude Desktop launched successfully!
 ) else if exist "%SHORTCUT%" (
     start "" "%SHORTCUT%"
