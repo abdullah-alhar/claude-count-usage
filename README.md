@@ -52,13 +52,6 @@ To remove it, double-click `uninstall.command` — this restores the original De
 
 To remove it, run `uninstall.bat`.
 
-### Browser (Chrome / Edge / Brave)
-
-1. Open `chrome://extensions`
-2. Enable **Developer mode** (top right)
-3. Click **Load unpacked**, select the `claude-count-usage` folder
-4. Open [claude.ai](https://claude.ai)
-
 ---
 
 ## Features
