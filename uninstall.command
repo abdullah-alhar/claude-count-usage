@@ -25,6 +25,11 @@ echo -e "${BOLD}================================================${NC}"
 echo ""
 
 # Find Node
+NODE_DIR="$HOME/Library/Application Support/ClaudeCountUsage/node"
+if [ -x "$NODE_DIR/bin/node" ]; then
+  export PATH="$NODE_DIR/bin:$PATH"
+fi
+
 if ! command -v node >/dev/null 2>&1; then
   if [ -x "/usr/local/bin/node" ]; then export PATH="/usr/local/bin:$PATH";
   elif [ -x "/opt/homebrew/bin/node" ]; then export PATH="/opt/homebrew/bin:$PATH";

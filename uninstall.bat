@@ -18,6 +18,11 @@ echo    by Abdullah Alhar
 echo ================================================
 echo.
 
+set "NODE_DIR=%LOCALAPPDATA%\ClaudeCountUsage\node"
+if exist "!NODE_DIR!\node.exe" (
+    set "PATH=!NODE_DIR!;%PATH%"
+)
+
 where node >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] Node.js is required to unpatch.
