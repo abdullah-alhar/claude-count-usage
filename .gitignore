@@ -1,17 +1,73 @@
-# OS files
+# macOS
 .DS_Store
-Thumbs.db
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
 
-# Archives and build artifacts
-*.zip
-*.tar.gz
-*.tgz
-*.msix
-*.asar.bak
-*.bak
+# macOS temporary files
+*.swp
+*.swo
 
-# Node & dependencies
+# Node.js
 node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+pnpm-debug.log*
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Build / distribution
+dist/
+build/
+out/
+*.zip
+
+# IDEs
+.idea/
+.vscode/
+*.iml
+
+# Logs
+*.log
+
+# OS / temporary files
+*.tmp
+*.temp
+
+# Java
+target/
+.classpath
+.project
+.settings/
+
+# React / Next.js
+.next/
+.cache/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Coverage
+coverage/
+
+# Firebase
+.firebase/
+firebase-debug.log
+firebaserc
+
+# Secrets / credentials
+*.pem
+*.key
+credentials.json
+serviceAccountKey.json
