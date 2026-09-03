@@ -891,88 +891,7 @@ function unpatchAsar(asarPath) {
   const resourcesDir = path.dirname(asarPath);
   const extDir = path.join(resourcesDir, 'injected-extension');
   if (fs.existsSync(extDir)) fs.rmSync(extDir, { recursive: true, force: true });
-
-  // Restore .exe on Windows if backup exists
-  if (os.platform() === 'win32') {
-    const appDir = path.dirname(resourcesDir);
-    const exeCandidates = [
-      path.join(appDir, 'Claude.exe'),
-      path.join(path.dirname(appDir), 'Claude.exe')
-    ];
-    for (const exe of exeCandidates) {
-      if (fs.existsSync(exe + '.bak')) {
-        try { fs.copyFileSync(exe + '.bak', exe); } catch {}
-      }
-    }
-  }
-
   console.log('Restored original app.asar from backup.');
-}
-
-// ─── Windows Electron Fuse Flipping (Disable ASAR Integrity) 
-
-function disableWindowsAsarIntegrity(appPath) {
-  if (os.platform() !== 'win32') return;
-
-  const sentinel = Buffer.from('dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX');
-
-  function findBinaries(dir, depth = 3) {
-    if (!fs.existsSync(dir) || depth < 0) return [];
-    const files = [];
-    try {
-      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-        const full = path.join(dir, entry.name);
-        if (entry.isDirectory() && !['node_modules', 'injected-extension'].includes(entry.name)) {
-          files.push(...findBinaries(full, depth - 1));
-        } else if (entry.isFile() && (entry.name.endsWith('.exe') || entry.name.endsWith('.dll'))) {
-          files.push(full);
-        }
-      }
-    } catch {}
-    return files;
-  }
-
-  const binaries = findBinaries(appPath);
-  for (const binPath of binaries) {
-    try {
-      const buf = fs.readFileSync(binPath);
-      const idx = buf.indexOf(sentinel);
-      if (idx !== -1) {
-        const version = buf[idx + sentinel.length];
-        const wireLen = buf[idx + sentinel.length + 1];
-        if (version === 1 && wireLen >= 5) {
-          // Backup binary before modifying
-          const bakPath = binPath + '.bak';
-          if (!fs.existsSync(bakPath)) {
-            try { fs.copyFileSync(binPath, bakPath); } catch {}
-          }
-
-          let changed = false;
-          // Fuse 4: EnableEmbeddedAsarIntegrityValidation
-          const fuse4Pos = idx + sentinel.length + 2 + 4;
-          if (buf[fuse4Pos] === 0x31) { // '1' -> '0'
-            buf[fuse4Pos] = 0x30;
-            changed = true;
-          }
-          // Fuse 5: OnlyLoadAppFromAsar
-          if (wireLen >= 6) {
-            const fuse5Pos = idx + sentinel.length + 2 + 5;
-            if (buf[fuse5Pos] === 0x31) {
-              buf[fuse5Pos] = 0x30;
-              changed = true;
-            }
-          }
-
-          if (changed) {
-            fs.writeFileSync(binPath, buf);
-            console.log(`Disabled asar integrity validation fuse in ${path.basename(binPath)}`);
-          }
-        }
-      }
-    } catch (err) {
-      console.warn(`Notice: Could not modify fuses in ${path.basename(binPath)}:`, err.message);
-    }
-  }
 }
 
 // ─── macOS Info.plist ElectronAsarIntegrity & Code Signing ──
@@ -1135,7 +1054,6 @@ async function cmdInstall(extensionDir) {
   }
 
   if (install.platform === 'win32') {
-    disableWindowsAsarIntegrity(install.appPath);
     setupWindowsShortcuts(install.appPath);
   }
 
@@ -1153,7 +1071,6 @@ async function cmdPatch(extensionDir) {
     signMac(install.appPath);
   }
   if (install.platform === 'win32') {
-    disableWindowsAsarIntegrity(install.appPath);
     setupWindowsShortcuts(install.appPath);
   }
   console.log('Patched successfully.');
