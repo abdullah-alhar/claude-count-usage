@@ -45,7 +45,7 @@ To remove it, double-click `uninstall.command` — this restores the original De
 ### Claude Desktop (Windows)
 
 1. Install [Node.js](https://nodejs.org).
-2. Double-click `install.bat`.
+2. Double-click [`install.bat`](install.bat).
    - If Claude Desktop isn't found, it's installed automatically.
    - `install.bat` also works standalone and fetches the rest from GitHub.
 3. Claude Desktop restarts with usage tracking active.
