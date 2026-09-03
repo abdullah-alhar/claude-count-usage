@@ -1,15 +1,14 @@
 # Claude Count Usage
 
-**Created by Abdullah Alhar**
+A minimal browser extension and desktop patch for Claude.ai that surfaces the two stats people actually want to see: how much of your session and weekly usage you've used, and what the current reply cost. No promos, no donate buttons, no bloat.
 
-A minimal Claude.ai browser/desktop extension that shows **only the 2 most useful UI elements** — no noise, no promotions, no donate buttons.
+Created by Abdullah Alhar.
 
 ---
 
-## What It Shows
+## What it does
 
-### 1. Sidebar Usage Bars
-Session (5h) and Weekly token usage with live progress bars and reset timers — injected directly into the Claude sidebar.
+**Sidebar usage bars** — Session (5h) and weekly token usage, with live progress bars and reset timers, injected directly into Claude's sidebar.
 
 ```
 Usage                    ⚙
@@ -19,8 +18,7 @@ Weekly:        23%  ⏱ 23h 33m
 [████████░░░░░░░░░░░░░]
 ```
 
-### 2. Top-Bar Token Stats
-Injected **below** the chat heading (the heading itself is unchanged):
+**Top-bar token stats** — appended below the existing chat heading (the heading itself isn't touched):
 
 ```
 Length*: 33,868 tokens  |  Cost: 210 credits  |  Cached for: 60m
@@ -28,44 +26,31 @@ Length*: 33,868 tokens  |  Cost: 210 credits  |  Cached for: 60m
 
 ---
 
-## Download & Installation
+## Installation
 
-### Mac — Claude Desktop App
+### Claude Desktop (Mac)
 
-**Zero extra launchers required.** Directly patches official Claude Desktop.
+No extra launcher needed — this patches the official Claude Desktop app directly.
 
-1. Ensure **[Node.js](https://nodejs.org)** is installed.
-2. Download or clone this repository (or simply download **[`install.command`](install.command)**).
-3. Double-click **`install.command`** in Finder.
-   - *If Mac asks "Are you sure?" → click **Open**.*
-   - *If Claude Desktop is not installed, the installer automatically downloads and installs it directly from Anthropic's CDN.*
-   - *Works standalone: even if you only download `install.command`, it automatically fetches the extension from GitHub.*
-4. Claude Desktop restarts automatically with usage tracking active!
+1. Install [Node.js](https://nodejs.org) if you don't have it.
+2. Download this repo, or just grab [`install.command`](install.command) on its own.
+3. Double-click `install.command`.
+   - If macOS shows a security prompt, click **Open**.
+   - If Claude Desktop isn't installed yet, the installer downloads it from Anthropic's CDN first.
+   - `install.command` works standalone — it pulls the rest of the extension from GitHub automatically.
+4. Claude Desktop restarts with usage tracking already active.
 
-**To uninstall:** double-click **`uninstall.command`** (restores original Claude Desktop bundle).
+To remove it, double-click `uninstall.command` — this restores the original Desktop bundle.
 
----
+### Claude Desktop (Windows)
 
-### Windows — Claude Desktop App
+1. Install [Node.js](https://nodejs.org).
+2. Double-click `install.bat`.
+   - If Claude Desktop isn't found, it's installed automatically.
+   - `install.bat` also works standalone and fetches the rest from GitHub.
+3. Claude Desktop restarts with usage tracking active.
 
-**Zero extra launchers required.** Directly patches Claude Desktop.
-
-1. Ensure **[Node.js](https://nodejs.org)** is installed.
-2. Double-click **`install.bat`**.
-   - *If Claude Desktop is not installed, the installer automatically fetches the official package from Anthropic.*
-   - *Works standalone: even if you only download `install.bat`, it automatically fetches the extension from GitHub.*
-3. Claude Desktop restarts with usage tracking active!
-
-**To uninstall:** double-click **`uninstall.bat`** (restores original Claude Desktop).
-
----
-
-### Browser (Chrome / Edge / Brave)
-
-1. Go to `chrome://extensions`
-2. Enable **Developer Mode** (top-right toggle)
-3. Click **Load unpacked** → select the `claude-count-usage` folder
-4. Go to [claude.ai](https://claude.ai)
+To remove it, run `uninstall.bat`.
 
 ---
 
@@ -73,51 +58,43 @@ Length*: 33,868 tokens  |  Cost: 210 credits  |  Cached for: 60m
 
 | Feature | Status |
 |---|---|
-| Session (5h) usage bar |
-| Weekly usage bar |
-| Top-bar token / cost / cache stats |
+| Session (5h) usage bar | ✅ |
+| Weekly usage bar | ✅ |
+| Top-bar token / cost / cache stats | ✅ |
 
 ---
 
-## How It Works
+## How it works
 
-The extension intercepts Claude's own API traffic locally — no external servers involved.
+The extension reads Claude's own API traffic locally — nothing is sent to an external server.
 
 ```
 Claude API
     │
     ▼
-injections/sse-watcher.js        ← Patches window.fetch (MAIN world)
-    │  Reads SSE stream events from /completion endpoint
-    │  Emits postMessage to content script
+injections/sse-watcher.js        Patches window.fetch (MAIN world),
+                                  reads SSE events from the /completion endpoint
+    │
     ▼
-content-components/*.js          ← Content scripts injected into claude.ai
-    │  Tokenizes reply locally with o200k (text never stored or sent)
-    │  Reports token count to background
+content-components/*.js          Injected into claude.ai, tokenizes replies
+                                  locally with o200k (message text never leaves the page)
+    │
     ▼
-background.js                    ← Service worker
-    │  Fetches /usage for session/weekly percentages
-    │  Stores data locally (chrome.storage.local)
-    │  Pushes updates to all open claude.ai tabs
+background.js                    Service worker — fetches /usage for session/weekly
+                                  percentages, caches locally, pushes updates to open tabs
+    │
     ▼
-UI injected into the page
-    • Sidebar: Session % + Weekly % progress bars
-    • Top bar: Tokens | Credits | Cache time
+UI injected into the page        Sidebar bars + top-bar stats
 ```
 
 ---
 
-
-
 ## Privacy
 
-**No data ever leaves your device.**
+No data leaves your device.
 
-- Message text is **never** stored or sent — only the token count (an integer)
-- All tokenization runs locally using the o200k tokenizer
+- Message text is never stored or transmitted — only a token count (an integer) is computed
+- Tokenization happens locally using the o200k tokenizer
 - No analytics, no telemetry, no third-party requests
 
-→ Full details: [PRIVACY.md](PRIVACY.md)
-
----
-
+See [PRIVACY.md](PRIVACY.md) for full details.
