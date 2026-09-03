@@ -1,0 +1,17 @@
+# OS files
+.DS_Store
+Thumbs.db
+
+# Archives and build artifacts
+*.zip
+*.tar.gz
+*.tgz
+*.msix
+*.asar.bak
+*.bak
+
+# Node & dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

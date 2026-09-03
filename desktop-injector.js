@@ -546,14 +546,22 @@ function readFileFromAsar(asarPath, dataOffset, node) {
 // ─── Wrapper Source ─────────────────────────────────────────
 
 function generateWrapperSource(relativeMainPath) {
-  return `'use strict';
-${MARKER}
-// Claude Count Usage — Desktop Extension Injector & Event Bridge
-const { app, session, Notification } = require('electron');
+  return `${MARKER}
+'use strict';
 const path = require('path');
 const fs = require('fs');
+const { app, session, Notification } = require('electron');
 
-const EXTENSION_DIR = path.join(process.resourcesPath, 'injected-extension');
+// Suppress harmless Node warnings (experimental loader and max listeners warnings)
+try { require('events').defaultMaxListeners = 100; } catch {}
+process.on('warning', (warning) => {
+  if (warning.name === 'ExperimentalWarning' || warning.name === 'MaxListenersExceededWarning') {
+    return;
+  }
+  console.warn(warning);
+});
+
+const EXTENSION_DIR = path.join(__dirname, '..', '..', 'resources', 'injected-extension');
 
 let mainWindow = null;
 let claudeWebContents = null;
@@ -656,15 +664,14 @@ app.on('web-contents-created', (event, contents) => {
 
 async function loadInjectedExtension() {
   try {
-    if (!fs.existsSync(EXTENSION_DIR)) {
-      console.log('[CCU] No extension folder found at', EXTENSION_DIR);
-      return;
+    if (!fs.existsSync(EXTENSION_DIR)) return;
+    const ses = session.defaultSession;
+    if (ses.extensions && typeof ses.extensions.loadExtension === 'function') {
+      await ses.extensions.loadExtension(EXTENSION_DIR, { allowFileAccess: true });
+    } else if (typeof ses.loadExtension === 'function') {
+      await ses.loadExtension(EXTENSION_DIR, { allowFileAccess: true });
     }
-    await session.defaultSession.loadExtension(EXTENSION_DIR, { allowFileAccess: true });
-    console.log('[CCU] Claude Count Usage extension loaded from', EXTENSION_DIR);
-  } catch (err) {
-    console.error('[CCU] Failed to load extension:', err);
-  }
+  } catch (err) {}
 }
 
 app.whenReady().then(loadInjectedExtension);
