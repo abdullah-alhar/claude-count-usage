@@ -32,30 +32,30 @@ Length*: 33,868 tokens  |  Cost: 210 credits  |  Cached for: 60m
 
 ### Mac — Claude Desktop App
 
-**Requires:** The Claude Desktop Launcher *(by Abdullah Alhar)*
-👉 **[Download Mac Launcher](https://github.com/abdullah-alhar/claude-count-usage/releases/tag/Mac)**
+**Zero extra launchers required.** Directly patches official Claude Desktop.
 
-1. Install and run the launcher at least once.
-2. Open Finder → go to the `claude-count-usage` folder.
-3. Double-click **`install.command`**.
-4. If Mac asks *"Are you sure?"* → click **Open**.
-5. Terminal will open and run automatically — Claude restarts when done.
+1. Download or clone this repository (or simply download **[`install.command`](install.command)**).
+2. Double-click **`install.command`** in Finder.
+   - *If Mac asks "Are you sure?" → click **Open**.*
+   - *If Claude Desktop is not installed, the installer automatically downloads and installs it directly from Anthropic's CDN.*
+   - *Works standalone: even if you only download `install.command`, it automatically fetches the extension from GitHub.*
+3. Claude Desktop restarts automatically with usage tracking active!
 
-**To uninstall:** double-click `uninstall.command`
+**To uninstall:** double-click **`uninstall.command`** (restores original Claude Desktop bundle).
 
 ---
 
-###  Windows — Claude Desktop App
+### Windows — Claude Desktop App
 
-**Requires:** The Claude Desktop Launcher *(by Abdullah Alhar)* + [Node.js](https://nodejs.org)
-👉 **[Download Windows Launcher](https://github.com/abdullah-alhar/claude-count-usage/releases/tag/windows)**
+**Zero extra launchers required.** Directly patches Claude Desktop.
 
-1. Install and run the launcher at least once.
-2. Open the `claude-count-usage` folder.
-3. Double-click **`install.bat`**.
-4. Follow the prompts — Claude restarts when done.
+1. Ensure **[Node.js](https://nodejs.org)** is installed.
+2. Double-click **`install.bat`**.
+   - *If Claude Desktop is not installed, the installer automatically fetches the official package from Anthropic.*
+   - *Works standalone: even if you only download `install.bat`, it automatically fetches the extension from GitHub.*
+3. Claude Desktop restarts with usage tracking active!
 
-**To uninstall:** double-click `uninstall.bat`
+**To uninstall:** double-click **`uninstall.bat`** (restores original Claude Desktop).
 
 ---
 

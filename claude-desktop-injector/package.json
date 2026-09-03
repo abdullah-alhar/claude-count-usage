@@ -1,0 +1,21 @@
+{
+  "name": "claude-desktop-injector",
+  "version": "0.1.0",
+  "description": "Downloads/locates the real Claude Desktop app and injects a local extension into it directly (no separate patched instance, no third-party launcher).",
+  "type": "commonjs",
+  "main": "src/cli.js",
+  "bin": {
+    "cdi": "src/cli.js"
+  },
+  "scripts": {
+    "install-claude": "node src/cli.js install",
+    "patch": "node src/cli.js patch",
+    "watch": "node src/cli.js watch-install",
+    "unpatch": "node src/cli.js unpatch"
+  },
+  "dependencies": {
+    "@electron/asar": "^3.2.13",
+    "node-fetch": "^2.7.0"
+  },
+  "license": "MIT"
+}
