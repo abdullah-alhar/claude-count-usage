@@ -116,10 +116,10 @@ if not exist "%CLAUDE_EXE%" set "CLAUDE_EXE=%LOCALAPPDATA%\ClaudeDesktopInjector
 set "SHORTCUT=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Claude.lnk"
 
 if exist "%CLAUDE_EXE%" (
-    powershell -NoProfile -Command "Start-Process '%CLAUDE_EXE%'" >nul 2>&1
+    start "" "%CLAUDE_EXE%"
     echo [OK] Claude Desktop launched successfully!
 ) else if exist "%SHORTCUT%" (
-    powershell -NoProfile -Command "Start-Process '%SHORTCUT%'" >nul 2>&1
+    start "" "%SHORTCUT%"
     echo [OK] Claude Desktop launched from Start Menu shortcut!
 ) else (
     start claude: >nul 2>&1 || (
