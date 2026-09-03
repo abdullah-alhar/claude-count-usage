@@ -106,14 +106,21 @@ if "!IS_TEMP_SOURCE!"=="1" (
 
 :: ── 5. Restart Claude ──────────────────────────────────────────
 echo.
-echo [Launch] Restarting Claude...
+echo [Launch] Starting Claude Desktop...
 taskkill /f /im Claude.exe >nul 2>&1
-timeout /t 1 /nobreak >nul
+ping -n 2 127.0.0.1 >nul
 
-set "PORTABLE_EXE=%LOCALAPPDATA%\ClaudeDesktopInjector\Claude\Claude.exe"
-if exist "%PORTABLE_EXE%" (
-    start "" "%PORTABLE_EXE%"
-    echo [OK] Claude Desktop launched from portable installation.
+set "CLAUDE_EXE=%LOCALAPPDATA%\ClaudeDesktopInjector\Claude\Claude.exe"
+if not exist "%CLAUDE_EXE%" set "CLAUDE_EXE=%LOCALAPPDATA%\ClaudeDesktopInjector\Claude\app\Claude.exe"
+
+set "SHORTCUT=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Claude.lnk"
+
+if exist "%CLAUDE_EXE%" (
+    start "" "%CLAUDE_EXE%"
+    echo [OK] Claude Desktop launched successfully!
+) else if exist "%SHORTCUT%" (
+    start "" "%SHORTCUT%"
+    echo [OK] Claude Desktop launched from Start Menu shortcut!
 ) else (
     start claude: >nul 2>&1 || (
         echo [OK] Installation complete. Please launch Claude from Start Menu.

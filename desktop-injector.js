@@ -955,6 +955,73 @@ function signMac(appPath) {
   } catch {}
 }
 
+// ─── Windows Start Menu & Desktop Shortcut Creation ────────
+
+function setupWindowsShortcuts(appPath) {
+  if (os.platform() !== 'win32') return;
+
+  function findExe(dir, depth = 3) {
+    if (!fs.existsSync(dir) || depth < 0) return null;
+    const candidates = [
+      path.join(dir, 'Claude.exe'),
+      path.join(dir, 'app', 'Claude.exe')
+    ];
+    for (const c of candidates) {
+      if (fs.existsSync(c)) return c;
+    }
+    try {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.isDirectory() && !['node_modules', 'injected-extension'].includes(entry.name)) {
+          const res = findExe(path.join(dir, entry.name), depth - 1);
+          if (res) return res;
+        }
+      }
+    } catch {}
+    return null;
+  }
+
+  const exePath = findExe(appPath);
+  if (!exePath) {
+    console.warn('Notice: Could not locate Claude.exe to create shortcut.');
+    return;
+  }
+
+  console.log('Creating Windows Start Menu and Desktop shortcuts for Claude...');
+  const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+  const userProfile = process.env.USERPROFILE || os.homedir();
+
+  const startMenuDir = path.join(appData, 'Microsoft', 'Windows', 'Start Menu', 'Programs');
+  const desktopDir = path.join(userProfile, 'Desktop');
+
+  const startMenuLnk = path.join(startMenuDir, 'Claude.lnk');
+  const desktopLnk = path.join(desktopDir, 'Claude.lnk');
+  const exeDir = path.dirname(exePath);
+
+  try {
+    fs.mkdirSync(startMenuDir, { recursive: true });
+    const psScript = `
+$ws = New-Object -ComObject WScript.Shell
+$s1 = $ws.CreateShortcut('${startMenuLnk.replace(/'/g, "''")}')
+$s1.TargetPath = '${exePath.replace(/'/g, "''")}'
+$s1.WorkingDirectory = '${exeDir.replace(/'/g, "''")}'
+$s1.IconLocation = '${exePath.replace(/'/g, "''")},0'
+$s1.Description = 'Claude Desktop'
+$s1.Save()
+
+$s2 = $ws.CreateShortcut('${desktopLnk.replace(/'/g, "''")}')
+$s2.TargetPath = '${exePath.replace(/'/g, "''")}'
+$s2.WorkingDirectory = '${exeDir.replace(/'/g, "''")}'
+$s2.IconLocation = '${exePath.replace(/'/g, "''")},0'
+$s2.Description = 'Claude Desktop'
+$s2.Save()
+`;
+    execFileSync('powershell.exe', ['-NoProfile', '-Command', psScript]);
+    console.log('Created Start Menu shortcut (Windows Search will now find Claude).');
+  } catch (err) {
+    console.warn('Could not create shortcut:', err.message);
+  }
+}
+
 // ─── High-Level CLI Actions ─────────────────────────────────
 
 async function cmdInstall(extensionDir) {
@@ -986,6 +1053,10 @@ async function cmdInstall(extensionDir) {
     signMac(install.appPath);
   }
 
+  if (install.platform === 'win32') {
+    setupWindowsShortcuts(install.appPath);
+  }
+
   console.log('\n Claude Count Usage installed successfully into Claude Desktop!');
 }
 
@@ -998,6 +1069,9 @@ async function cmdPatch(extensionDir) {
   if (install.platform === 'darwin') {
     updateInfoPlistHash(install.appPath, install.asarPath);
     signMac(install.appPath);
+  }
+  if (install.platform === 'win32') {
+    setupWindowsShortcuts(install.appPath);
   }
   console.log('Patched successfully.');
 }
@@ -1028,33 +1102,34 @@ function cmdCheck() {
   const pkg = JSON.parse(readFileFromAsar(install.asarPath, dataOffset, pkgNode).toString('utf8'));
   const mainNode = getNode(header, pkg.main || 'index.js');
   if (mainNode) {
-    const mainBuf = readFileFromAsar(install.asarPath, dataOffset, mainNode);
-    if (mainBuf && mainBuf.toString('utf8').includes(MARKER)) {
+    const mainContent = readFileFromAsar(install.asarPath, dataOffset, mainNode).toString('utf8');
+    if (mainContent.includes(MARKER)) {
       console.log('PATCHED');
-      process.exit(0);
+      return;
     }
   }
-  console.log('READY');
-  process.exit(0);
+  console.log('UNPATCHED');
 }
 
-// ─── Entry Point ────────────────────────────────────────────
+// ─── CLI Entrypoint ─────────────────────────────────────────
 
 if (require.main === module) {
-  const args = process.argv.slice(2);
-  const command = args[0] || 'install';
-  const extDir = args[1] || path.resolve(__dirname);
+  const [,, cmd, arg1] = process.argv;
+  const extDir = arg1 || __dirname;
 
   (async () => {
-    switch (command) {
+    switch (cmd) {
       case 'install':
         await cmdInstall(extDir);
+        process.exit(0);
         break;
       case 'patch':
         await cmdPatch(extDir);
+        process.exit(0);
         break;
       case 'unpatch':
         cmdUnpatch();
+        process.exit(0);
         break;
       case 'check':
         cmdCheck();
