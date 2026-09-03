@@ -550,12 +550,47 @@ function generateWrapperSource(relativeMainPath) {
 ${MARKER}
 // Claude Count Usage — Desktop Extension Injector & Event Bridge
 require('events').EventEmitter.defaultMaxListeners = 100;
-const { app, session, Notification } = require('electron');
+const { app, session, Notification, webContents } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
 const EXTENSION_DIR = path.join(process.resourcesPath, 'injected-extension');
 
+// ── Extension loader: inject into EVERY session, not just defaultSession ──
+// Claude Desktop renders claude.ai inside a WebContentsView that uses its
+// own session/partition. An extension loaded only into defaultSession will
+// never get its content scripts injected into that view. We track which
+// sessions we've already loaded into via a WeakSet to avoid duplicates.
+const loadedSessions = new WeakSet();
+
+async function loadIntoSession(sess) {
+  if (!sess || loadedSessions.has(sess)) return;
+  loadedSessions.add(sess);
+  try {
+    await sess.loadExtension(EXTENSION_DIR, { allowFileAccess: true });
+    console.log('[CCU] Extension loaded into session');
+  } catch (err) {
+    console.error('[CCU] Failed to load extension into session:', err);
+  }
+}
+
+async function loadExtensionEverywhere() {
+  if (!fs.existsSync(EXTENSION_DIR)) {
+    console.log('[CCU] No extension folder found at', EXTENSION_DIR);
+    return;
+  }
+  // Load into default session first
+  await loadIntoSession(session.defaultSession);
+  // Load into every existing WebContents' session
+  for (const wc of webContents.getAllWebContents()) {
+    await loadIntoSession(wc.session);
+  }
+  // Load into any future WebContents' sessions
+  app.on('web-contents-created', (_event, wc) => loadIntoSession(wc.session));
+  console.log('[CCU] Claude Count Usage extension loaded from', EXTENSION_DIR);
+}
+
+// ── Polyfill bridge (alarms, notifications, tab events) ──
 let mainWindow = null;
 let claudeWebContents = null;
 let polyfillsReady = false;
@@ -655,20 +690,7 @@ app.on('web-contents-created', (event, contents) => {
   contents.once('dom-ready', () => check(contents.getURL()));
 });
 
-async function loadInjectedExtension() {
-  try {
-    if (!fs.existsSync(EXTENSION_DIR)) {
-      console.log('[CCU] No extension folder found at', EXTENSION_DIR);
-      return;
-    }
-    await session.defaultSession.loadExtension(EXTENSION_DIR, { allowFileAccess: true });
-    console.log('[CCU] Claude Count Usage extension loaded from', EXTENSION_DIR);
-  } catch (err) {
-    console.error('[CCU] Failed to load extension:', err);
-  }
-}
-
-app.whenReady().then(loadInjectedExtension);
+app.whenReady().then(loadExtensionEverywhere);
 
 // Boot original application
 require(${JSON.stringify(relativeMainPath)});
@@ -892,7 +914,177 @@ function unpatchAsar(asarPath) {
   const resourcesDir = path.dirname(asarPath);
   const extDir = path.join(resourcesDir, 'injected-extension');
   if (fs.existsSync(extDir)) fs.rmSync(extDir, { recursive: true, force: true });
+
+  // Restore .exe on Windows if backup exists
+  if (os.platform() === 'win32') {
+    const parentDir = path.dirname(resourcesDir);
+    const candidates = [
+      path.join(parentDir, 'Claude.exe'),
+      path.join(path.dirname(parentDir), 'Claude.exe')
+    ];
+    for (const exe of candidates) {
+      if (fs.existsSync(exe + '.bak')) {
+        try { fs.copyFileSync(exe + '.bak', exe); } catch {}
+      }
+    }
+  }
+
   console.log('Restored original app.asar from backup.');
+}
+
+// ─── ASAR Header Hash Computation ──────────────────────────
+
+function computeAsarHeaderHash(asarPath) {
+  const fd = fs.openSync(asarPath, 'r');
+  const prefix = Buffer.alloc(16);
+  fs.readSync(fd, prefix, 0, 16, 0);
+  const jsonLen = prefix.readUInt32LE(12);
+  const headerBuf = Buffer.alloc(jsonLen);
+  fs.readSync(fd, headerBuf, 0, jsonLen, 16);
+  fs.closeSync(fd);
+  return crypto.createHash('sha256').update(headerBuf).digest('hex');
+}
+
+// ─── Windows: Update ASAR Integrity Hash & Fuses in Claude.exe ─────
+//
+// On Windows, Electron stores the expected ASAR header hash as a PE
+// resource (type "INTEGRITY", name "ELECTRONASAR") inside the main .exe.
+// The resource contains JSON like:
+//   [{"file":"resources\\app.asar","alg":"sha256","value":"<64-char hex>"}]
+//
+// After we modify app.asar, the old hash no longer matches. We find the
+// old hash string in the .exe binary and replace it with the new hash.
+// We also flip the Electron fuses for double protection.
+// This is zero-dependency — no resedit or PE parser needed.
+
+function updateWindowsExeIntegrity(appPath, asarPath) {
+  if (os.platform() !== 'win32') return;
+
+  const newHash = computeAsarHeaderHash(asarPath);
+  let oldHash = null;
+  const bakAsar = asarPath + '.bak';
+  if (fs.existsSync(bakAsar)) {
+    try {
+      oldHash = computeAsarHeaderHash(bakAsar);
+    } catch {}
+  }
+
+  // Find Claude.exe
+  function findExe(dir, depth = 3) {
+    if (!fs.existsSync(dir) || depth < 0) return null;
+    for (const c of [path.join(dir, 'Claude.exe'), path.join(dir, 'app', 'Claude.exe')]) {
+      if (fs.existsSync(c)) return c;
+    }
+    try {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.isDirectory() && !['node_modules', 'injected-extension'].includes(entry.name)) {
+          const res = findExe(path.join(dir, entry.name), depth - 1);
+          if (res) return res;
+        }
+      }
+    } catch {}
+    return null;
+  }
+
+  const exePath = findExe(appPath);
+  if (!exePath) {
+    console.warn('Could not find Claude.exe — skipping ASAR integrity hash update.');
+    return;
+  }
+
+  console.log(`Updating ASAR integrity in ${path.basename(exePath)} ...`);
+
+  // Backup the exe
+  const bakPath = exePath + '.bak';
+  if (!fs.existsSync(bakPath)) {
+    try { fs.copyFileSync(exePath, bakPath); } catch {}
+  }
+
+  const exeBuf = fs.readFileSync(exePath);
+  let replaced = false;
+
+  // 1. If oldHash is known from app.asar.bak, search and replace it across the whole exe
+  if (oldHash && oldHash.length === 64) {
+    const oldBuf = Buffer.from(oldHash, 'ascii');
+    const newBuf = Buffer.from(newHash, 'ascii');
+    let pos = 0;
+    while ((pos = exeBuf.indexOf(oldBuf, pos)) !== -1) {
+      newBuf.copy(exeBuf, pos);
+      console.log(`  Replaced integrity hash in exe: ${oldHash} -> ${newHash}`);
+      replaced = true;
+      pos += 64;
+    }
+  }
+
+  // 2. Search for integrity JSON block anywhere in the binary ("value":"<64 hex>")
+  const patterns = [
+    Buffer.from('"value":"'),
+    Buffer.from('"hash":"')
+  ];
+  for (const pat of patterns) {
+    let pos = 0;
+    while ((pos = exeBuf.indexOf(pat, pos)) !== -1) {
+      const hashStart = pos + pat.length;
+      if (hashStart + 64 <= exeBuf.length) {
+        const candidate = exeBuf.slice(hashStart, hashStart + 64).toString('ascii');
+        if (/^[0-9a-fA-F]{64}$/.test(candidate) && candidate.toLowerCase() !== newHash.toLowerCase()) {
+          console.log(`  Found integrity hash in resource: ${candidate}`);
+          console.log(`  Replacing with: ${newHash}`);
+          Buffer.from(newHash, 'ascii').copy(exeBuf, hashStart);
+          replaced = true;
+        }
+      }
+      pos += pat.length;
+    }
+  }
+
+  // 3. Fallback: Search near "app.asar" for any 64-char hex
+  const asarRef = Buffer.from('app.asar');
+  let asarPos = 0;
+  while ((asarPos = exeBuf.indexOf(asarRef, asarPos)) !== -1) {
+    const region = exeBuf.slice(asarPos, Math.min(exeBuf.length, asarPos + 512));
+    const regionStr = region.toString('ascii');
+    const hexMatch = regionStr.match(/([0-9a-fA-F]{64})/);
+    if (hexMatch && hexMatch[1].toLowerCase() !== newHash.toLowerCase()) {
+      const hashOffset = asarPos + regionStr.indexOf(hexMatch[1]);
+      console.log(`  Found hash near app.asar: ${hexMatch[1]}`);
+      console.log(`  Replacing with: ${newHash}`);
+      Buffer.from(newHash, 'ascii').copy(exeBuf, hashOffset);
+      replaced = true;
+    }
+    asarPos += asarRef.length;
+  }
+
+  // 4. Also flip Electron Fuses (double protection)
+  const sentinel = Buffer.from('dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX');
+  const idx = exeBuf.indexOf(sentinel);
+  if (idx !== -1) {
+    const version = exeBuf[idx + sentinel.length];
+    const wireLen = exeBuf[idx + sentinel.length + 1];
+    if (version === 1 && wireLen >= 5) {
+      const fuse4Pos = idx + sentinel.length + 2 + 4; // EnableEmbeddedAsarIntegrityValidation
+      if (exeBuf[fuse4Pos] === 0x31) {
+        exeBuf[fuse4Pos] = 0x30; // disable
+        console.log('  Disabled EnableEmbeddedAsarIntegrityValidation fuse');
+        replaced = true;
+      }
+      if (wireLen >= 6) {
+        const fuse5Pos = idx + sentinel.length + 2 + 5; // OnlyLoadAppFromAsar
+        if (exeBuf[fuse5Pos] === 0x31) {
+          exeBuf[fuse5Pos] = 0x30; // disable
+          console.log('  Disabled OnlyLoadAppFromAsar fuse');
+          replaced = true;
+        }
+      }
+    }
+  }
+
+  if (replaced) {
+    fs.writeFileSync(exePath, exeBuf);
+    console.log('  Updated ASAR integrity in exe successfully.');
+  } else {
+    console.warn('  Notice: Could not locate integrity hash pattern in exe.');
+  }
 }
 
 // ─── macOS Info.plist ElectronAsarIntegrity & Code Signing ──
@@ -903,15 +1095,7 @@ function updateInfoPlistHash(appPath, asarPath) {
   if (!fs.existsSync(infoPlist)) return;
 
   try {
-    const fd = fs.openSync(asarPath, 'r');
-    const prefix = Buffer.alloc(16);
-    fs.readSync(fd, prefix, 0, 16, 0);
-    const jsonLen = prefix.readUInt32LE(12);
-    const headerBuf = Buffer.alloc(jsonLen);
-    fs.readSync(fd, headerBuf, 0, jsonLen, 16);
-    fs.closeSync(fd);
-
-    const headerHash = crypto.createHash('sha256').update(headerBuf).digest('hex');
+    const headerHash = computeAsarHeaderHash(asarPath);
     console.log(`Updating ElectronAsarIntegrity in Info.plist to: ${headerHash}`);
 
     try {
@@ -1055,6 +1239,7 @@ async function cmdInstall(extensionDir) {
   }
 
   if (install.platform === 'win32') {
+    updateWindowsExeIntegrity(install.appPath, install.asarPath);
     setupWindowsShortcuts(install.appPath);
   }
 
@@ -1072,6 +1257,7 @@ async function cmdPatch(extensionDir) {
     signMac(install.appPath);
   }
   if (install.platform === 'win32') {
+    updateWindowsExeIntegrity(install.appPath, install.asarPath);
     setupWindowsShortcuts(install.appPath);
   }
   console.log('Patched successfully.');
