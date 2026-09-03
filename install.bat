@@ -25,37 +25,21 @@ echo    by Abdullah Alhar
 echo ================================================
 echo.
 
-:: ── 1. Check or Auto-Install Node.js ──────────────────────────
+:: ── 1. Check Node.js ──────────────────────────────────────────
 echo [Checking] Node.js...
-set "NODE_DIR=%LOCALAPPDATA%\ClaudeCountUsage\node"
-if exist "!NODE_DIR!\node.exe" (
-    set "PATH=!NODE_DIR!;%PATH%"
-)
-
 where node >nul 2>&1
 if errorlevel 1 (
     echo.
-    echo [Info] Node.js not detected - downloading portable Node.js for Windows...
-    if not exist "!NODE_DIR!" mkdir "!NODE_DIR!" >nul 2>&1
-    set "NODE_ARCH=x64"
-    if /i "%PROCESSOR_ARCHITECTURE%"=="ARM64" set "NODE_ARCH=arm64"
-
-    echo [Downloading] Fetching Node.js from nodejs.org...
-    powershell -NoProfile -Command "$arch = '%NODE_ARCH%'; [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $html = (New-Object System.Net.WebClient).DownloadString('https://nodejs.org/dist/latest-v20.x/'); if ($html -match 'node-(v[0-9.]+)-win-' + $arch + '\.zip') { $file = $matches[0]; $url = 'https://nodejs.org/dist/latest-v20.x/' + $file; $zip = Join-Path $env:TEMP $file; (New-Object System.Net.WebClient).DownloadFile($url, $zip); $extDir = Join-Path $env:TEMP 'node_tmp'; Expand-Archive -Path $zip -DestinationPath $extDir -Force; $inner = Get-ChildItem $extDir | Select-Object -First 1; Copy-Item -Path ($inner.FullName + '\*') -Destination '!NODE_DIR!' -Recurse -Force; Remove-Item $zip -Force; Remove-Item $extDir -Recurse -Force; }"
-
-    if exist "!NODE_DIR!\node.exe" (
-        set "PATH=!NODE_DIR!;%PATH%"
-        echo [OK] Node.js installed automatically
-    ) else (
-        echo [ERROR] Could not auto-install Node.js.
-        echo Please install Node.js from https://nodejs.org
-        pause
-        exit /b 1
-    )
+    echo [ERROR] Node.js is not installed.
+    echo.
+    echo  Please install Node.js from: https://nodejs.org
+    echo  Then double-click this installer again.
+    echo.
+    pause
+    exit /b 1
 )
-
 for /f "tokens=*" %%v in ('node --version 2^>nul') do set "NODE_VER=%%v"
-echo [OK] Node.js !NODE_VER! ready.
+echo [OK] Node.js !NODE_VER! found.
 
 :: ── 2. Check or Download Extension Files ───────────────────────
 set "IS_TEMP_SOURCE=0"
@@ -103,6 +87,11 @@ echo [OK] Extension ready
 :: ── 4. Run Injector to patch Claude Desktop ───────────────────
 echo.
 echo [Installing] Injecting into Claude Desktop...
+
+:: Clear any stale/corrupted packages from earlier incomplete downloads
+del /f /q "%TEMP%\Claude-*.msix" >nul 2>&1
+del /f /q "%TEMP%\Claude-*.zip" >nul 2>&1
+
 node "%EXT_DIR%\desktop-injector.js" install "%EXT_DIR%"
 if errorlevel 1 (
     echo [ERROR] Installation failed.

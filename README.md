@@ -34,13 +34,13 @@ Length*: 33,868 tokens  |  Cost: 210 credits  |  Cached for: 60m
 
 **Zero extra launchers required.** Directly patches official Claude Desktop.
 
-1. Download or clone this repository (or simply download **[`install.command`](install.command)**).
-2. Double-click **`install.command`** in Finder.
+1. Ensure **[Node.js](https://nodejs.org)** is installed.
+2. Download or clone this repository (or simply download **[`install.command`](install.command)**).
+3. Double-click **`install.command`** in Finder.
    - *If Mac asks "Are you sure?" → click **Open**.*
-   - *If Node.js is not found, the installer automatically downloads and configures portable Node.js.*
    - *If Claude Desktop is not installed, the installer automatically downloads and installs it directly from Anthropic's CDN.*
    - *Works standalone: even if you only download `install.command`, it automatically fetches the extension from GitHub.*
-3. Claude Desktop restarts automatically with usage tracking active!
+4. Claude Desktop restarts automatically with usage tracking active!
 
 **To uninstall:** double-click **`uninstall.command`** (restores original Claude Desktop bundle).
 
@@ -50,11 +50,11 @@ Length*: 33,868 tokens  |  Cost: 210 credits  |  Cached for: 60m
 
 **Zero extra launchers required.** Directly patches Claude Desktop.
 
-1. Double-click **`install.bat`**.
-   - *If Node.js is not found, the installer automatically downloads and configures portable Node.js.*
+1. Ensure **[Node.js](https://nodejs.org)** is installed.
+2. Double-click **`install.bat`**.
    - *If Claude Desktop is not installed, the installer automatically fetches the official package from Anthropic.*
    - *Works standalone: even if you only download `install.bat`, it automatically fetches the extension from GitHub.*
-2. Claude Desktop restarts with usage tracking active!
+3. Claude Desktop restarts with usage tracking active!
 
 **To uninstall:** double-click **`uninstall.bat`** (restores original Claude Desktop).
 

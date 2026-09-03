@@ -90,16 +90,26 @@ function locateClaude() {
   return null;
 }
 
-function findAsarUnder(dir) {
-  if (!fs.existsSync(dir)) return null;
+function findAsarUnder(dir, maxDepth = 4) {
+  if (!fs.existsSync(dir) || maxDepth < 0) return null;
   const candidates = [
     path.join(dir, 'resources', 'app.asar'),
     path.join(dir, 'app', 'resources', 'app.asar'),
-    path.join(dir, 'Contents', 'Resources', 'app.asar')
+    path.join(dir, 'Contents', 'Resources', 'app.asar'),
+    path.join(dir, 'app.asar')
   ];
   for (const c of candidates) {
     if (fs.existsSync(c)) return c;
   }
+  try {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory() && !['node_modules', 'injected-extension', '.git'].includes(entry.name)) {
+        const found = findAsarUnder(path.join(dir, entry.name), maxDepth - 1);
+        if (found) return found;
+      }
+    }
+  } catch {}
   return null;
 }
 
@@ -137,41 +147,146 @@ function httpGet(url) {
   });
 }
 
-function downloadFile(url, destPath, onProgress) {
+function downloadFile(url, destPath, onProgress, maxRetries = 5) {
+  // If curl is available (Windows 10/11 has curl.exe, macOS has /usr/bin/curl), use it with native resume
+  const canUseCurl = (() => {
+    try {
+      execFileSync('curl', ['--version'], { stdio: 'ignore' });
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+
+  if (canUseCurl) {
+    try {
+      fs.mkdirSync(path.dirname(destPath), { recursive: true });
+      console.log('Downloading using system curl (resumable with retries)...');
+      execFileSync('curl', [
+        '-fL',
+        '-C', '-',                       // Resume previous partial download
+        '--retry', '5',                  // Retry on transient errors
+        '--retry-delay', '2',
+        '--retry-connrefused',
+        '--connect-timeout', '30',
+        '-A', 'ClaudeCountUsage-Installer',
+        '-o', destPath,
+        url
+      ], { stdio: 'inherit' });
+
+      if (fs.existsSync(destPath) && fs.statSync(destPath).size > 10 * 1024 * 1024) {
+        return Promise.resolve(destPath);
+      }
+    } catch (curlErr) {
+      console.log('curl download interrupted or failed, using Node.js resume downloader...');
+    }
+  }
+
+  // Pure Node.js resilient downloader with HTTP Range header resume
+  return (async () => {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        await attemptNodeDownload(url, destPath, onProgress);
+        return destPath;
+      } catch (err) {
+        console.warn(`\n[Download] Connection interrupted (${err.message || err}). Resuming (attempt ${attempt}/${maxRetries}) in 2s...`);
+        if (attempt === maxRetries) throw err;
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    }
+    return destPath;
+  })();
+}
+
+function attemptNodeDownload(url, destPath, onProgress) {
   return new Promise((resolve, reject) => {
     const https = require('https');
     const http = require('http');
-    const client = url.startsWith('https:') ? https : http;
 
-    const req = client.get(url, { headers: { 'User-Agent': 'ClaudeCountUsage-Installer' } }, (res) => {
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        let redirectUrl = res.headers.location;
-        if (!redirectUrl.startsWith('http')) {
-          const parsed = new URL(url);
-          redirectUrl = new URL(redirectUrl, parsed.origin).href;
+    function resolveUrl(targetUrl, depth = 0) {
+      if (depth > 6) return reject(new Error('Too many redirects'));
+      const client = targetUrl.startsWith('https:') ? https : http;
+      client.get(targetUrl, { headers: { 'User-Agent': 'ClaudeCountUsage-Installer' } }, (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          let redirectUrl = res.headers.location;
+          if (!redirectUrl.startsWith('http')) {
+            const parsed = new URL(targetUrl);
+            redirectUrl = new URL(redirectUrl, parsed.origin).href;
+          }
+          res.resume();
+          return resolveUrl(redirectUrl, depth + 1);
         }
-        return downloadFile(redirectUrl, destPath, onProgress).then(resolve).catch(reject);
+        res.destroy();
+        doDownload(targetUrl);
+      }).on('error', reject);
+    }
+
+    function doDownload(finalUrl) {
+      let startOffset = 0;
+      if (fs.existsSync(destPath)) {
+        startOffset = fs.statSync(destPath).size;
       }
-      if (res.statusCode < 200 || res.statusCode >= 300) {
-        return reject(new Error(`HTTP ${res.statusCode} from ${url}`));
+
+      const headers = { 'User-Agent': 'ClaudeCountUsage-Installer' };
+      if (startOffset > 0) {
+        headers['Range'] = `bytes=${startOffset}-`;
       }
 
-      const total = Number(res.headers['content-length'] || 0);
-      let received = 0;
+      const client = finalUrl.startsWith('https:') ? https : http;
+      const req = client.get(finalUrl, { headers }, (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          return resolveUrl(res.headers.location);
+        }
 
-      fs.mkdirSync(path.dirname(destPath), { recursive: true });
-      const out = fs.createWriteStream(destPath);
+        let isRange = false;
+        let total = 0;
+        let received = 0;
 
-      res.on('data', (chunk) => {
-        received += chunk.length;
-        if (onProgress && total > 0) onProgress(received / total);
+        if (res.statusCode === 206) {
+          isRange = true;
+          const cl = Number(res.headers['content-length'] || 0);
+          total = startOffset + cl;
+          received = startOffset;
+          console.log(`\nResuming download from byte ${startOffset} (${((startOffset / total) * 100).toFixed(0)}%)...`);
+        } else if (res.statusCode === 200) {
+          total = Number(res.headers['content-length'] || 0);
+          received = 0;
+          startOffset = 0;
+        } else if (res.statusCode === 416) {
+          // Range Not Satisfiable: file is already completely downloaded!
+          res.resume();
+          return resolve(destPath);
+        } else {
+          return reject(new Error(`HTTP ${res.statusCode} from ${finalUrl}`));
+        }
+
+        fs.mkdirSync(path.dirname(destPath), { recursive: true });
+        const out = fs.createWriteStream(destPath, { flags: isRange ? 'a' : 'w' });
+
+        res.on('data', (chunk) => {
+          received += chunk.length;
+          if (onProgress && total > 0) onProgress(received / total);
+        });
+
+        res.pipe(out);
+        res.on('error', (err) => {
+          out.close();
+          reject(err);
+        });
+        out.on('finish', () => {
+          out.close();
+          resolve(destPath);
+        });
+        out.on('error', reject);
       });
-      res.pipe(out);
-      res.on('error', reject);
-      out.on('finish', () => resolve(destPath));
-      out.on('error', reject);
-    });
-    req.on('error', reject);
+
+      req.on('error', reject);
+      req.setTimeout(60000, () => {
+        req.destroy(new Error('Connection timeout'));
+      });
+    }
+
+    resolveUrl(url);
   });
 }
 
@@ -214,6 +329,23 @@ function isBundleHealthy(appPath) {
   return true;
 }
 
+function isZipComplete(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return false;
+    const stat = fs.statSync(filePath);
+    if (stat.size < 1024) return false;
+    // An MSIX/ZIP file must end with the End of Central Directory (EOCD) signature: 0x06054b50 ("PK\x05\x06")
+    const fd = fs.openSync(filePath, 'r');
+    const readLen = Math.min(stat.size, 65557);
+    const buf = Buffer.alloc(readLen);
+    fs.readSync(fd, buf, 0, readLen, stat.size - readLen);
+    fs.closeSync(fd);
+    return buf.includes(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+  } catch {
+    return false;
+  }
+}
+
 async function downloadClaude(destDir = os.tmpdir()) {
   const plat = os.platform();
   const arch = os.arch() === 'arm64' ? 'arm64' : 'x64';
@@ -222,15 +354,29 @@ async function downloadClaude(destDir = os.tmpdir()) {
     console.log('Fetching latest Claude Desktop release info from Anthropic CDN...');
     const { url, version } = await getMacDownloadUrl();
     const dest = path.join(destDir, `Claude-${version}.zip`);
-    if (fs.existsSync(dest) && fs.statSync(dest).size > 100 * 1024 * 1024) {
-      console.log(`Using cached package: ${dest}`);
+
+    if (isZipComplete(dest)) {
+      console.log(`Using verified cached package: ${dest}`);
       return { filePath: dest, version, platform: 'darwin' };
     }
-    console.log(`Downloading Claude Desktop ${version} (${arch})...`);
+
+    if (fs.existsSync(dest)) {
+      console.log(`Found partial download (${(fs.statSync(dest).size / (1024 * 1024)).toFixed(1)} MB). Resuming download...`);
+    } else {
+      console.log(`Downloading Claude Desktop ${version} (${arch})...`);
+    }
+
     await downloadFile(url, dest, (p) => {
       process.stdout.write(`\rProgress: ${(p * 100).toFixed(0)}% `);
     });
     process.stdout.write('\n');
+
+    if (!isZipComplete(dest)) {
+      console.warn('Downloaded archive appears incomplete. Retrying clean download...');
+      try { fs.rmSync(dest, { force: true }); } catch {}
+      await downloadFile(url, dest);
+    }
+
     return { filePath: dest, version, platform: 'darwin' };
   }
 
@@ -238,15 +384,33 @@ async function downloadClaude(destDir = os.tmpdir()) {
     console.log('Fetching latest Claude Desktop MSIX info from Anthropic CDN...');
     const { url, version } = await getWindowsDownloadUrl(arch);
     const dest = path.join(destDir, `Claude-${version}-${arch}.msix`);
-    if (fs.existsSync(dest) && fs.statSync(dest).size > 50 * 1024 * 1024) {
-      console.log(`Using cached package: ${dest}`);
-      return { filePath: dest, version, platform: 'win32' };
+    const zipAlias = dest.replace(/\.msix$/i, '.zip');
+
+    // If an incomplete or corrupt package was left behind, wipe it
+    if (fs.existsSync(dest)) {
+      if (!isZipComplete(dest)) {
+        console.log(`Clearing corrupted or incomplete cached package: ${dest}`);
+        try { fs.rmSync(dest, { force: true }); } catch {}
+        try { fs.rmSync(zipAlias, { force: true }); } catch {}
+      } else {
+        console.log(`Using verified cached package: ${dest}`);
+        return { filePath: dest, version, platform: 'win32' };
+      }
     }
-    console.log(`Downloading Claude Desktop ${version} (${arch})...`);
+
+    console.log(`Downloading fresh Claude Desktop ${version} (${arch})...`);
     await downloadFile(url, dest, (p) => {
       process.stdout.write(`\rProgress: ${(p * 100).toFixed(0)}% `);
     });
     process.stdout.write('\n');
+
+    if (!isZipComplete(dest)) {
+      console.warn('Downloaded package appears incomplete or corrupt. Retrying clean download...');
+      try { fs.rmSync(dest, { force: true }); } catch {}
+      try { fs.rmSync(zipAlias, { force: true }); } catch {}
+      await downloadFile(url, dest);
+    }
+
     return { filePath: dest, version, platform: 'win32' };
   }
 
@@ -290,15 +454,28 @@ function installDownloadedClaude(filePath) {
     if (fs.existsSync(destDir)) fs.rmSync(destDir, { recursive: true, force: true });
     fs.mkdirSync(destDir, { recursive: true });
 
+    if (!isZipComplete(filePath)) {
+      try { fs.rmSync(filePath, { force: true }); } catch {}
+      throw new Error(`The installer package at ${filePath} was incomplete or corrupted. It has been removed. Please run the installer again to complete the download.`);
+    }
+
     const zipAlias = filePath.replace(/\.msix$/i, '.zip');
     fs.copyFileSync(filePath, zipAlias);
 
     console.log('Extracting portable Claude package...');
-    execFileSync('powershell.exe', [
-      '-NoProfile',
-      '-Command',
-      `Expand-Archive -Path "${zipAlias}" -DestinationPath "${destDir}" -Force`
-    ]);
+    let extracted = false;
+    try {
+      execFileSync('tar.exe', ['-xf', zipAlias, '-C', destDir]);
+      extracted = true;
+    } catch {}
+
+    if (!extracted) {
+      execFileSync('powershell.exe', [
+        '-NoProfile',
+        '-Command',
+        `Expand-Archive -Path "${zipAlias}" -DestinationPath "${destDir}" -Force`
+      ]);
+    }
     return destDir;
   }
 

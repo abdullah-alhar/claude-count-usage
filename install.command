@@ -30,14 +30,9 @@ echo -e "${BOLD}   by Abdullah Alhar                           ${NC}"
 echo -e "${BOLD}================================================${NC}"
 echo ""
 
-# ── 1. Check or Auto-Install Node.js ──────────────────────────
+# ── 1. Check Node.js ──────────────────────────────────────────
 
 info "Checking Node.js..."
-NODE_DIR="$HOME/Library/Application Support/ClaudeCountUsage/node"
-if [ -x "$NODE_DIR/bin/node" ]; then
-  export PATH="$NODE_DIR/bin:$PATH"
-fi
-
 if ! command -v node >/dev/null 2>&1; then
   # Check standard Mac paths
   if [ -x "/usr/local/bin/node" ]; then
@@ -52,30 +47,10 @@ if ! command -v node >/dev/null 2>&1; then
   fi
 fi
 
-# Auto-download portable Node.js if still not found
 if ! command -v node >/dev/null 2>&1; then
-  info "Node.js not detected — downloading portable Node.js for macOS..."
-  mkdir -p "$NODE_DIR"
-  ARCH="$(uname -m)"
-  [ "$ARCH" = "x86_64" ] && ARCH="x64"
-
-  TAR_NAME=$(curl -sL "https://nodejs.org/dist/latest-v20.x/" | grep -o "node-v[0-9.]*-darwin-$ARCH.tar.gz" | head -n 1)
-  [ -z "$TAR_NAME" ] && TAR_NAME="node-v20.18.0-darwin-$ARCH.tar.gz"
-
-  TMP_TAR="/tmp/$TAR_NAME"
-  info "Downloading $TAR_NAME..."
-  curl -sSL "https://nodejs.org/dist/latest-v20.x/$TAR_NAME" -o "$TMP_TAR" || fail "Failed to download Node.js."
-
-  info "Extracting Node.js..."
-  tar -xzf "$TMP_TAR" -C "$NODE_DIR" --strip-components=1 || fail "Failed to extract Node.js."
-  rm -f "$TMP_TAR"
-
-  export PATH="$NODE_DIR/bin:$PATH"
-  command -v node >/dev/null 2>&1 || fail "Failed to initialize Node.js."
-  log "Node.js installed automatically"
+  fail "Node.js is not installed.\nPlease install Node.js from https://nodejs.org and run this installer again."
 fi
-
-log "Node.js $(node -v) ready"
+log "Node.js $(node -v) found"
 
 # ── 2. Check or Download Extension Files ───────────────────────
 
