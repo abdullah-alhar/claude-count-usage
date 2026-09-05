@@ -33,24 +33,24 @@ Length*: 33,868 tokens  |  Cost: 210 credits  |  Cached for: 60m
 No extra launcher needed — this patches the official Claude Desktop app directly.
 
 1. Install [Node.js](https://nodejs.org) if you don't have it.
-2. Download this repo, or just grab [`install.command`](install.command) on its own.
-3. Double-click `install.command`.
+2. Download this repo, or grab [`Install.app`](Install.app).
+3. Double-click **`Install.app`** or **`install.command`**.
    - If macOS shows a security prompt, click **Open**.
    - If Claude Desktop isn't installed yet, the installer downloads it from Anthropic's CDN first.
-   - `install.command` works standalone — it pulls the rest of the extension from GitHub automatically.
+   - Works standalone — pulls the rest of the extension from GitHub automatically.
 4. Claude Desktop restarts with usage tracking already active.
 
-To remove it, double-click `uninstall.command` — this restores the original Desktop bundle.
+To remove it, double-click **`Uninstall.app`** or `uninstall.command`.
 
 ### Claude Desktop (Windows)
 
 1. Install [Node.js](https://nodejs.org).
-2. Double-click [`install.bat`](install.bat).
+2. Double-click **[`Install.exe`](Install.exe)** .
    - If Claude Desktop isn't found, it's installed automatically.
-   - `install.bat` also works standalone and fetches the rest from GitHub.
+   - Works standalone and fetches the rest from GitHub if run alone.
 3. Claude Desktop restarts with usage tracking active.
 
-To remove it, run `uninstall.bat`.
+To remove it, run **`Uninstall.exe`** or `uninstall.bat`.
 
 ---
 

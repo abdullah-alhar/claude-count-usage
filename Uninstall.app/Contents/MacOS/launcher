@@ -1,0 +1,16 @@
+#!/bin/bash
+APP_CONTENTS="$(cd "$(dirname "$0")/.." && pwd)"
+APP_DIR="$(cd "$APP_CONTENTS/.." && pwd)"
+REPO_DIR="$(cd "$APP_DIR/.." && pwd)"
+SCRIPT_NAME="uninstall.command"
+
+if [ -f "$REPO_DIR/$SCRIPT_NAME" ]; then
+  TARGET="$REPO_DIR/$SCRIPT_NAME"
+  CWD="$REPO_DIR"
+else
+  TARGET="$APP_CONTENTS/Resources/$SCRIPT_NAME"
+  CWD="$APP_CONTENTS/Resources"
+fi
+
+osascript -e "tell application \"Terminal\" to do script \"cd \\\"$CWD\\\" && \\\"$TARGET\\\"\""
+osascript -e "tell application \"Terminal\" to activate"
