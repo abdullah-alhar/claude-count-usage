@@ -44,27 +44,25 @@ if errorlevel 1 (
     exit /b 1
 )
 
-:: ── Get desktop-injector.js (download it if not sitting locally) ──
-if not exist "%SCRIPT_DIR%\desktop-injector.js" (
-    echo [Info] desktop-injector.js not found locally - fetching from GitHub...
-    set "TMP_DIR=%TEMP%\ccu-uninstall-%RANDOM%"
-    set "IS_TEMP_SOURCE=1"
-    mkdir "!TMP_DIR!" >nul 2>&1
-    set "ZIP_PATH=!TMP_DIR!\repo.zip"
+:: ── Get desktop-injector.js (always fetch the latest from GitHub) ──
+echo [Info] Fetching latest uninstaller files from GitHub...
+set "TMP_DIR=%TEMP%\ccu-uninstall-%RANDOM%"
+set "IS_TEMP_SOURCE=1"
+mkdir "!TMP_DIR!" >nul 2>&1
+set "ZIP_PATH=!TMP_DIR!\repo.zip"
 
-    powershell -NoProfile -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object System.Net.WebClient).DownloadFile('%GITHUB_ZIP%', '!ZIP_PATH!')"
-    if errorlevel 1 (
-        echo [ERROR] Failed to download uninstaller files from GitHub.
-        pause
-        exit /b 1
-    )
-    powershell -NoProfile -Command "Expand-Archive -Path '!ZIP_PATH!' -DestinationPath '!TMP_DIR!' -Force"
-    set "EXT_DIR=!TMP_DIR!\claude-count-usage-main"
-    if not exist "!EXT_DIR!\desktop-injector.js" (
-        echo [ERROR] Downloaded archive did not contain desktop-injector.js.
-        pause
-        exit /b 1
-    )
+powershell -NoProfile -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object System.Net.WebClient).DownloadFile('%GITHUB_ZIP%', '!ZIP_PATH!')"
+if errorlevel 1 (
+    echo [ERROR] Failed to download uninstaller files from GitHub.
+    pause
+    exit /b 1
+)
+powershell -NoProfile -Command "Expand-Archive -Path '!ZIP_PATH!' -DestinationPath '!TMP_DIR!' -Force"
+set "EXT_DIR=!TMP_DIR!\claude-count-usage-main"
+if not exist "!EXT_DIR!\desktop-injector.js" (
+    echo [ERROR] Downloaded archive did not contain desktop-injector.js.
+    pause
+    exit /b 1
 )
 
 :: ── Locate Claude Desktop ────────────────────────────────────
