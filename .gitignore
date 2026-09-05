@@ -8,6 +8,7 @@
 .fseventsd
 
 # macOS temporary files
+.Rhistory
 *.swp
 *.swo
 
