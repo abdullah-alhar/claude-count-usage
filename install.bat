@@ -1,143 +1,149 @@
 @echo off
 setlocal enabledelayedexpansion
-title Claude Count Usage Installer
+title Claude Count Usage Uninstaller
 
 :: =============================================================
-::  Claude Count Usage - Windows Desktop Installer
+::  Claude Count Usage - Windows Desktop UNINSTALLER
 ::  Created by Abdullah Alhar
 ::
-::  HOW TO USE:
-::    Double-click this file.
-::    Works standalone (auto-downloads extension if run alone)
-::    and directly patches official Claude Desktop.
+::  Performs a COMPLETE uninstall: deletes the Claude Desktop app
+::  entirely, rather than restoring the patched app.asar in place
+::  (that relied on a backup made on first patch, which goes stale
+::  the moment Claude Desktop auto-updates).
+::
+::  Uses desktop-injector.js's locateClaude() - the SAME lookup the
+::  installer already relies on - so it finds Claude wherever it
+::  actually lives (portable copy, Programs, AppData, MSIX, etc.)
+::  instead of guessing a single fixed path.
+::
+::  After this runs, download a fresh copy of Claude Desktop from
+::  https://claude.ai/download if you want to keep using it without
+::  this extension.
 :: =============================================================
 
 set "SCRIPT_DIR=%~dp0"
 if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
-
 set "GITHUB_ZIP=https://github.com/abdullah-alhar/claude-count-usage/archive/refs/heads/main.zip"
+set "IS_TEMP_SOURCE=0"
+set "EXT_DIR=%SCRIPT_DIR%"
 
 cls
 echo.
 echo ================================================
-echo    Claude Count Usage - Desktop Installer
+echo    Claude Count Usage - Uninstaller
 echo    by Abdullah Alhar
 echo ================================================
 echo.
 
-:: ── 1. Check Node.js ──────────────────────────────────────────
-echo [Checking] Node.js...
+:: ── Find Node ────────────────────────────────────────────────
 where node >nul 2>&1
 if errorlevel 1 (
-    echo.
-    echo [ERROR] Node.js is not installed.
-    echo.
-    echo  Please install Node.js from: https://nodejs.org
-    echo  Then double-click this installer again.
-    echo.
+    echo [ERROR] Node.js is required to locate Claude Desktop.
+    echo         Install it from https://nodejs.org and run this again.
     pause
     exit /b 1
 )
-for /f "tokens=*" %%v in ('node --version 2^>nul') do set "NODE_VER=%%v"
-echo [OK] Node.js !NODE_VER! found.
 
-:: ── 2. Check or Download Extension Files ───────────────────────
-set "IS_TEMP_SOURCE=0"
-set "EXT_DIR=%SCRIPT_DIR%"
-
-if not exist "%SCRIPT_DIR%\manifest_electron.json" (
-    echo.
-    echo [Info] Standalone installer detected - fetching latest extension from GitHub...
-    set "TMP_DIR=%TEMP%\ccu-dl-%RANDOM%"
+:: ── Get desktop-injector.js (download it if not sitting locally) ──
+if not exist "%SCRIPT_DIR%\desktop-injector.js" (
+    echo [Info] desktop-injector.js not found locally - fetching from GitHub...
+    set "TMP_DIR=%TEMP%\ccu-uninstall-%RANDOM%"
     set "IS_TEMP_SOURCE=1"
     mkdir "!TMP_DIR!" >nul 2>&1
     set "ZIP_PATH=!TMP_DIR!\repo.zip"
 
-    echo [Downloading] Downloading latest release from GitHub...
     powershell -NoProfile -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object System.Net.WebClient).DownloadFile('%GITHUB_ZIP%', '!ZIP_PATH!')"
     if errorlevel 1 (
-        echo [ERROR] Failed to download extension files from GitHub.
+        echo [ERROR] Failed to download uninstaller files from GitHub.
         pause
         exit /b 1
     )
-
-    echo [Extracting] Unpacking extension files...
     powershell -NoProfile -Command "Expand-Archive -Path '!ZIP_PATH!' -DestinationPath '!TMP_DIR!' -Force"
     set "EXT_DIR=!TMP_DIR!\claude-count-usage-main"
-    if not exist "!EXT_DIR!\manifest_electron.json" (
-        echo [ERROR] Downloaded archive did not contain extension files.
+    if not exist "!EXT_DIR!\desktop-injector.js" (
+        echo [ERROR] Downloaded archive did not contain desktop-injector.js.
         pause
         exit /b 1
     )
-    echo [OK] Downloaded latest extension files from GitHub
 )
 
-:: ── 3. Configure manifest and dataclasses ───────────────────────
-echo.
-echo [Configuring] Preparing extension files...
-if exist "%EXT_DIR%\manifest_electron.json" (
-    copy /y "%EXT_DIR%\manifest_electron.json" "%EXT_DIR%\manifest.json" >nul
+:: ── Locate Claude Desktop ────────────────────────────────────
+set "LOCATE_OUTPUT="
+for /f "delims=" %%A in ('node "%EXT_DIR%\desktop-injector.js" locate 2^>nul') do set "LOCATE_OUTPUT=%%A"
+
+if "%LOCATE_OUTPUT%"=="NOT_FOUND" (
+    echo [!] Claude Desktop was not found on this PC.
+    echo     Nothing to uninstall.
+    call :cleanup_temp
+    pause
+    exit /b 0
 )
 
-if exist "%EXT_DIR%\scripts\build-dataclasses.js" (
-    node "%EXT_DIR%\scripts\build-dataclasses.js" >nul 2>&1
+echo %LOCATE_OUTPUT%| findstr /b "PROTECTED:" >nul
+if not errorlevel 1 (
+    set "APP_PATH=%LOCATE_OUTPUT:PROTECTED:=%"
+    echo [!] Claude Desktop at !APP_PATH! is a Microsoft Store / managed install.
+    echo     That needs to be removed through Windows Settings, not this script.
+    echo     Opening Settings -^> Apps for you now...
+    start ms-settings:appsfeatures
+    call :cleanup_temp
+    pause
+    exit /b 0
 )
-echo [OK] Extension ready
 
-:: ── 4. Run Injector to patch Claude Desktop ───────────────────
-echo.
-echo [Installing] Injecting into Claude Desktop...
-
-:: Clear any stale/corrupted packages from earlier incomplete downloads
-del /f /q "%TEMP%\Claude-*.msix" >nul 2>&1
-del /f /q "%TEMP%\Claude-*.zip" >nul 2>&1
-
-node "%EXT_DIR%\desktop-injector.js" install "%EXT_DIR%"
+echo %LOCATE_OUTPUT%| findstr /b "FOUND:" >nul
 if errorlevel 1 (
-    echo [ERROR] Installation failed.
+    echo [ERROR] Could not determine whether Claude Desktop is installed.
+    echo         Unexpected output: %LOCATE_OUTPUT%
+    call :cleanup_temp
     pause
     exit /b 1
 )
+set "APP_PATH=%LOCATE_OUTPUT:FOUND:=%"
 
-:: Clean up temp folder if any
-if "!IS_TEMP_SOURCE!"=="1" (
-    if exist "!TMP_DIR!" rmdir /s /q "!TMP_DIR!" >nul 2>&1
+echo This will completely DELETE Claude Desktop from this PC:
+echo     %APP_PATH%
+echo.
+echo This is a full uninstall, not just a revert of our patch.
+echo Your Claude login/chat data is stored separately and will
+echo NOT be touched - only the application itself is removed.
+echo.
+set /p CONFIRM=Continue? [y/N]: 
+if /i not "%CONFIRM%"=="y" (
+    echo Cancelled.
+    call :cleanup_temp
+    pause
+    exit /b 0
 )
 
-:: ── 5. Restart Claude ──────────────────────────────────────────
 echo.
-echo [Launch] Starting Claude Desktop...
-taskkill /f /im Claude.exe >nul 2>&1
-ping -n 2 127.0.0.1 >nul
+echo [Info] Deleting Claude Desktop...
+set "DELETE_OUTPUT="
+for /f "delims=" %%A in ('node "%EXT_DIR%\desktop-injector.js" delete 2^>nul') do set "DELETE_OUTPUT=%%A"
 
-set "CLAUDE_EXE=%LOCALAPPDATA%\ClaudeDesktopInjector\Claude\Claude.exe"
-if not exist "%CLAUDE_EXE%" set "CLAUDE_EXE=%LOCALAPPDATA%\ClaudeDesktopInjector\Claude\app\Claude.exe"
-
-set "SHORTCUT=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Claude.lnk"
-
-if exist "%CLAUDE_EXE%" (
-    for %%I in ("%CLAUDE_EXE%") do set "EXE_DIR=%%~dpI"
-    start "" /d "!EXE_DIR!" "%CLAUDE_EXE%"
-    echo [OK] Claude Desktop launched successfully!
-) else if exist "%SHORTCUT%" (
-    start "" "%SHORTCUT%"
-    echo [OK] Claude Desktop launched from Start Menu shortcut!
+echo %DELETE_OUTPUT%| findstr /b "DELETED:" >nul
+if errorlevel 1 (
+    echo [!] Could not confirm deletion - check manually: %APP_PATH%
 ) else (
-    start claude: >nul 2>&1 || (
-        echo [OK] Installation complete. Please launch Claude from Start Menu.
-    )
+    echo [OK] Deleted %APP_PATH%
 )
 
-:: ── 6. Done ───────────────────────────────────────────────────
+call :cleanup_temp
+
 echo.
 echo ================================================
-echo    Installation complete!
+echo    Uninstall complete!
 echo ================================================
 echo.
-echo What to look for in Claude Desktop:
-echo   * Left sidebar   -^> Usage bars (Session 5h + Weekly)
-echo   * In any chat    -^> Token / Cost / Cache stats below heading
-echo.
-echo To uninstall later: double-click  uninstall.bat
+echo Claude Desktop has been removed from this PC.
+echo To use Claude Desktop again (without this extension), download
+echo a fresh copy from: https://claude.ai/download
 echo.
 pause
+exit /b 0
+
+:cleanup_temp
+if "%IS_TEMP_SOURCE%"=="1" (
+    if exist "%TMP_DIR%" rmdir /s /q "%TMP_DIR%" >nul 2>&1
+)
+exit /b 0

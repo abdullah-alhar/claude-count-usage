@@ -1298,6 +1298,55 @@ function cmdCheck() {
   console.log('UNPATCHED');
 }
 
+// ─── Full Uninstall (delete the whole app, not just the patch) ─────
+//
+// Reuses locateClaude(), which already recursively searches the
+// portable/Programs/AppData/WindowsApps locations and is the same
+// logic the (working) installer relies on to find Claude. This
+// avoids re-implementing a weaker path search in shell/batch that
+// misses non-standard install locations (e.g. MSI/portable copies).
+
+function cmdLocate() {
+  const install = locateClaude();
+  if (!install) {
+    console.log('NOT_FOUND');
+    process.exit(1);
+  }
+  if (install.protected) {
+    console.log('PROTECTED:' + install.appPath);
+    process.exit(2);
+  }
+  console.log('FOUND:' + install.appPath);
+}
+
+function cmdDelete() {
+  const install = locateClaude();
+  if (!install) {
+    console.log('NOT_FOUND');
+    process.exit(1);
+  }
+  if (install.protected) {
+    console.log('PROTECTED:' + install.appPath);
+    process.exit(2);
+  }
+
+  try {
+    if (install.platform === 'darwin') {
+      execFileSync('pkill', ['-x', 'Claude'], { stdio: 'ignore' });
+    } else if (install.platform === 'win32') {
+      execFileSync('taskkill', ['/f', '/im', 'Claude.exe'], { stdio: 'ignore' });
+    }
+  } catch {}
+
+  if (!fs.existsSync(install.appPath)) {
+    console.log('NOT_FOUND');
+    process.exit(1);
+  }
+
+  fs.rmSync(install.appPath, { recursive: true, force: true });
+  console.log('DELETED:' + install.appPath);
+}
+
 // ─── CLI Entrypoint ─────────────────────────────────────────
 
 if (require.main === module) {
@@ -1321,12 +1370,22 @@ if (require.main === module) {
       case 'check':
         cmdCheck();
         break;
+      case 'locate':
+        cmdLocate();
+        process.exit(0);
+        break;
+      case 'delete':
+        cmdDelete();
+        process.exit(0);
+        break;
       default:
         console.log(`Usage:
   node desktop-injector.js install [extensionDir]
   node desktop-injector.js patch   [extensionDir]
   node desktop-injector.js unpatch
-  node desktop-injector.js check`);
+  node desktop-injector.js check
+  node desktop-injector.js locate
+  node desktop-injector.js delete`);
         process.exit(1);
     }
   })().catch((err) => {
@@ -1343,5 +1402,7 @@ module.exports = {
   unpatchAsar,
   signMac,
   readAsarHeader,
+  cmdLocate,
+  cmdDelete,
   MARKER
 };
