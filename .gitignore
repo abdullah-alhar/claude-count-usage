@@ -6,6 +6,7 @@
 .Spotlight-V100
 .Trashes
 .fseventsd
+*.app/
 
 # macOS temporary files
 .Rhistory
