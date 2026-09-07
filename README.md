@@ -1,8 +1,24 @@
 # Claude Count Usage
 
-A minimal browser extension and desktop patch for Claude.ai that surfaces the two stats people actually want to see: how much of your session and weekly usage you've used, and what the current reply cost. No promos, no donate buttons, no bloat.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Chrome-informational)
 
-Created by Abdullah Alhar.
+**Claude Count Usage** is a minimal, open-source **Claude usage tracker** — a browser extension and desktop patch for Claude.ai that surfaces the two stats people actually want to see: how much of your session and weekly usage you've used, and what the current reply cost. No promos, no donate buttons, no bloat.
+
+Created by [Abdullah Alhar](https://github.com/abdullah-alhar).
+
+![Claude Count Usage demo](assets/demo.gif)
+
+---
+
+## Contents
+
+- [What it does](#what-it-does)
+- [Installation](#installation)
+- [Features](#features)
+- [How it works](#how-it-works)
+- [Privacy](#privacy)
+- [License](#license)
 
 ---
 
@@ -33,26 +49,27 @@ Length*: 33,868 tokens  |  Cost: 210 credits  |  Cached for: 60m
 No extra launcher needed — this patches the official Claude Desktop app directly.
 
 1. Install [Node.js](https://nodejs.org) if you don't have it.
-2. Download this repo, or grab the [Mac Installer](https://github.com/abdullah-alhar/claude-count-usage/releases/download/New/Mac.installer.zip).
-3. Double-click **`Install.app`** or **`install.command`**.
+2. Download this repo, or grab the [Mac Installer](https://github.com/abdullah-alhar/claude-count-usage/releases/download/New/Mac.installer.zip) and unzip it.
+3. Double-click **Install.app** (from the zip) or **`install.command`** (from the repo).
    - If macOS shows a security prompt, click **Open**.
    - If Claude Desktop isn't installed yet, the installer downloads it from Anthropic's CDN first.
    - Works standalone — pulls the rest of the extension from GitHub automatically.
 4. Claude Desktop restarts with usage tracking already active.
 
-To remove it, double-click **`Uninstall.app`** or `uninstall.command`.
+To remove it, double-click **Uninstall.app** or run **`uninstall.command`**. This performs a full, clean uninstall of Claude Desktop rather than trying to patch it back — reinstall fresh from [claude.ai/download](https://claude.ai/download) afterward if you want to keep using Claude without the tracker.
 
 ### Claude Desktop (Windows)
 
 1. Install [Node.js](https://nodejs.org).
-2. Download the [Windows Installer](https://github.com/abdullah-alhar/claude-count-usage/releases/download/New/Windows.installer.zip).
-3. Double-click **[`Install.exe`](Install.exe)** .
+2. Download this repo, or grab the [Windows Installer](https://github.com/abdullah-alhar/claude-count-usage/releases/download/New/Windows.installer.zip) and unzip it.
+3. Run **`install.exe`**.
    - If Claude Desktop isn't found, it's installed automatically.
    - Works standalone and fetches the rest from GitHub if run alone.
 4. Claude Desktop restarts with usage tracking active.
-To remove it, run **`Uninstall.exe`** or `uninstall.bat`.
 
----
+To remove it, run **`uninstall.exe`** — this fully uninstalls Claude Desktop rather than trying to patch it back; grab a fresh copy from [claude.ai/download](https://claude.ai/download) afterward if you want to keep using it.
+
+
 
 ## Features
 
@@ -87,6 +104,8 @@ background.js                    Service worker — fetches /usage for session/w
 UI injected into the page        Sidebar bars + top-bar stats
 ```
 
+On Claude Desktop, there's no plugin API to hook into, so the installer patches the app directly: it unpacks Electron's `app.asar`, injects the same tracker code, repacks it, fixes the macOS integrity hash, and re-signs the app so Gatekeeper doesn't block it.
+
 ---
 
 ## Privacy
@@ -98,3 +117,11 @@ No data leaves your device.
 - No analytics, no telemetry, no third-party requests
 
 See [PRIVACY.md](PRIVACY.md) for full details.
+
+---
+
+## License
+
+MIT © 2026 [Abdullah Alhar](https://github.com/abdullah-alhar) — see [LICENSE](LICENSE) for details.
+
+Found a bug or have an idea? [Open an issue](https://github.com/abdullah-alhar/claude-count-usage/issues) — contributions welcome.
