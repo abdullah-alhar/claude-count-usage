@@ -1,24 +1,10 @@
 # Claude Count Usage
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Chrome-informational)
-
 **Claude Count Usage** is a minimal, open-source **Claude usage tracker** — a browser extension and desktop patch for Claude.ai that surfaces the two stats people actually want to see: how much of your session and weekly usage you've used, and what the current reply cost. No promos, no donate buttons, no bloat.
 
 Created by [Abdullah Alhar](https://github.com/abdullah-alhar).
 
 ![Claude Count Usage demo](assets/demo.gif)
-
----
-
-## Contents
-
-- [What it does](#what-it-does)
-- [Installation](#installation)
-- [Features](#features)
-- [How it works](#how-it-works)
-- [Privacy](#privacy)
-- [License](#license)
 
 ---
 
