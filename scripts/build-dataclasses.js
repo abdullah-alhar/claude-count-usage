@@ -33,3 +33,19 @@ for (const { src, out, pragma } of targets) {
 	fs.writeFileSync(path.join(rootDir, out), contentVersion);
 	console.log(`Generated ${out.split(path.sep).join('/')}`);
 }
+
+// Clean any Windows thumbnail caches or OS metadata if present
+function cleanOsJunk(dir) {
+	try {
+		for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+			const full = path.join(dir, entry.name);
+			const lower = entry.name.toLowerCase();
+			if (lower === 'thumbs.db' || lower.startsWith('thumbs.db') || lower === '.ds_store' || entry.name.startsWith('._')) {
+				try { fs.rmSync(full, { force: true }); } catch {}
+			} else if (entry.isDirectory() && entry.name !== '.git' && entry.name !== 'node_modules') {
+				cleanOsJunk(full);
+			}
+		}
+	} catch {}
+}
+cleanOsJunk(rootDir);

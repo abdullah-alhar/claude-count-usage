@@ -907,23 +907,124 @@ async function patchAsar(asarPath, extensionDir) {
   return { asarPath, backupAsar, alreadyPatched: false };
 }
 
+function shouldIgnoreExtensionEntry(name) {
+  const lower = name.toLowerCase();
+
+  // OS metadata and thumbnail caches
+  if (lower === '.ds_store' || lower === 'desktop.ini') return true;
+  if (lower === 'thumbs.db' || lower.startsWith('thumbs.db')) return true;
+  if (lower.startsWith('ehthumbs') && lower.endsWith('.db')) return true;
+  if (name.startsWith('._')) return true;
+
+  // Version control, dependency, and build scratch folders
+  if (lower === '.git' || lower === '.github' || lower === 'node_modules') return true;
+  if (lower === 'claude-desktop-injector') return true;
+
+  // macOS app bundles (e.g. Install.app, Uninstall.app with Icon\r)
+  if (lower.endsWith('.app')) return true;
+
+  // Standalone installers, executables, scripts, and archives
+  if (lower.endsWith('.bat') || lower.endsWith('.cmd') || lower.endsWith('.command') || lower.endsWith('.sh') || lower.endsWith('.ps1')) return true;
+  if (lower.endsWith('.exe') || lower.endsWith('.zip') || lower.endsWith('.msix') || lower.endsWith('.dmg') || lower.endsWith('.pkg')) return true;
+
+  // Patching scripts and repository documentation not needed by the extension runtime
+  if (lower === 'desktop-injector.js' || lower === 'asar-patcher.js') return true;
+  if (['readme.md', 'privacy.md', 'license.md', 'security.md', 'contributing.md'].includes(lower)) return true;
+
+  // Backups and temporary files
+  if (lower.endsWith('.bak') || lower.endsWith('.tmp') || lower.endsWith('.swp')) return true;
+
+  // Catch any filename containing Windows-illegal characters (\r, \n, :, *, ?, ", <, >, |)
+  // This explicitly prevents crashes from macOS custom icon files (e.g. 'Icon\r')
+  if (/[\r\n:*?"<>|]/.test(name)) return true;
+
+  return false;
+}
+
+function cleanOsJunk(dir) {
+  try {
+    if (!fs.existsSync(dir)) return;
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      const lower = entry.name.toLowerCase();
+      if (lower === 'thumbs.db' || lower.startsWith('thumbs.db') || lower === '.ds_store' || entry.name.startsWith('._')) {
+        try { fs.rmSync(full, { force: true }); } catch {}
+      } else if (entry.isDirectory() && entry.name !== '.git' && entry.name !== 'node_modules') {
+        cleanOsJunk(full);
+      }
+    }
+  } catch {}
+}
+
+function copyExtensionDirRecursive(srcDir, destDir) {
+  if (!fs.existsSync(destDir)) {
+    fs.mkdirSync(destDir, { recursive: true });
+  }
+
+  let entries = [];
+  try {
+    entries = fs.readdirSync(srcDir, { withFileTypes: true });
+  } catch (err) {
+    console.warn(`[Warning] Unable to read directory ${srcDir}: ${err.message}`);
+    return;
+  }
+
+  for (const entry of entries) {
+    const name = entry.name;
+    if (shouldIgnoreExtensionEntry(name)) continue;
+
+    const srcPath = path.join(srcDir, name);
+    const destPath = path.join(destDir, name);
+
+    try {
+      if (entry.isDirectory()) {
+        copyExtensionDirRecursive(srcPath, destPath);
+      } else if (entry.isFile() || entry.isSymbolicLink()) {
+        const parentDir = path.dirname(destPath);
+        if (!fs.existsSync(parentDir)) {
+          fs.mkdirSync(parentDir, { recursive: true });
+        }
+        fs.copyFileSync(srcPath, destPath);
+      }
+    } catch (err) {
+      console.warn(`[Warning] Skipping non-essential file "${name}": ${err.message}`);
+    }
+  }
+}
+
 function installExtensionFolder(resourcesDir, extensionDir) {
   const destExtDir = path.join(resourcesDir, 'injected-extension');
   console.log('Installing extension to:', destExtDir);
+
+  // Clean junk like Thumbs.db from source folder if present
+  cleanOsJunk(extensionDir);
+
+  // Remove previous injected-extension if present
   if (fs.existsSync(destExtDir)) {
-    fs.rmSync(destExtDir, { recursive: true, force: true });
-  }
-  fs.cpSync(extensionDir, destExtDir, {
-    recursive: true,
-    filter: (src) => {
-      const base = path.basename(src);
-      return !['.git', 'install.command', 'install.bat', 'uninstall.command', 'uninstall.bat', 'README.md', 'PRIVACY.md'].includes(base);
+    try {
+      fs.rmSync(destExtDir, { recursive: true, force: true });
+    } catch (err) {
+      console.warn(`[Warning] Could not fully remove old extension folder: ${err.message}`);
     }
-  });
+  }
+
+  copyExtensionDirRecursive(extensionDir, destExtDir);
+
   // Ensure manifest.json in dest is the electron manifest
   const manifestElectron = path.join(destExtDir, 'manifest_electron.json');
   if (fs.existsSync(manifestElectron)) {
-    fs.copyFileSync(manifestElectron, path.join(destExtDir, 'manifest.json'));
+    try {
+      fs.copyFileSync(manifestElectron, path.join(destExtDir, 'manifest.json'));
+    } catch (err) {
+      console.warn(`[Warning] Could not copy manifest_electron.json to manifest.json: ${err.message}`);
+    }
+  }
+
+  // Ensure manifest.json exists in destination
+  const manifestDest = path.join(destExtDir, 'manifest.json');
+  if (!fs.existsSync(manifestDest)) {
+    throw new Error(`Extension installation failed: manifest.json missing in ${destExtDir}`);
   }
 }
 

@@ -42,6 +42,12 @@ out/
 # OS / temporary files
 *.tmp
 *.temp
+[Tt]humbs.db*
+[Tt]humbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+desktop.ini
+$RECYCLE.BIN/
 
 # Java
 target/
