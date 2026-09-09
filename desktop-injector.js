@@ -715,6 +715,69 @@ require(${JSON.stringify(relativeMainPath)});
 `;
 }
 
+// ─── Process & Lock Management ──────────────────────────────
+
+function closeRunningClaude() {
+  try {
+    if (os.platform() === 'win32') {
+      execFileSync('taskkill', ['/f', '/im', 'Claude.exe'], { stdio: 'ignore' });
+    } else if (os.platform() === 'darwin') {
+      execFileSync('pkill', ['-x', 'Claude'], { stdio: 'ignore' });
+    }
+  } catch {}
+  if (os.platform() === 'win32') {
+    try {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 800);
+    } catch {
+      const end = Date.now() + 800;
+      while (Date.now() < end) {}
+    }
+  }
+}
+
+function safeReplaceAsar(tempAsarPath, asarPath) {
+  closeRunningClaude();
+  let attempts = 0;
+  const maxAttempts = 6;
+  while (true) {
+    try {
+      if (os.platform() === 'win32' && fs.existsSync(asarPath)) {
+        const oldTemp = asarPath + '.old-' + Date.now();
+        try {
+          fs.renameSync(asarPath, oldTemp);
+          try { fs.unlinkSync(oldTemp); } catch {}
+        } catch {
+          try { fs.unlinkSync(asarPath); } catch {}
+        }
+      }
+      fs.renameSync(tempAsarPath, asarPath);
+      return;
+    } catch (err) {
+      attempts++;
+      if (attempts >= maxAttempts) {
+        try {
+          fs.copyFileSync(tempAsarPath, asarPath);
+          try { fs.unlinkSync(tempAsarPath); } catch {}
+          return;
+        } catch (copyErr) {
+          if (err.code === 'EPERM' || err.code === 'EBUSY' || err.code === 'EACCES') {
+            throw new Error(`Permission denied (${err.code}) while replacing app.asar.\nClaude Desktop appears to be running and locking app.asar.\nPlease close Claude Desktop completely (from Task Manager if needed) and run the installer again.\n(${err.message})`);
+          }
+          throw err;
+        }
+      }
+      closeRunningClaude();
+      const delay = attempts * 300;
+      try {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay);
+      } catch {
+        const end = Date.now() + delay;
+        while (Date.now() < end) {}
+      }
+    }
+  }
+}
+
 // ─── Surgical ASAR Patcher ──────────────────────────────────
 
 async function patchAsar(asarPath, extensionDir) {
@@ -722,6 +785,15 @@ async function patchAsar(asarPath, extensionDir) {
   if (!fs.existsSync(extensionDir)) throw new Error(`Extension dir not found at ${extensionDir}`);
 
   const resourcesDir = path.dirname(asarPath);
+
+  // Clean up any stale temporary asar files from previous failed runs
+  try {
+    for (const file of fs.readdirSync(resourcesDir)) {
+      if (file.startsWith('app.asar.tmp-') || file.startsWith('app.asar.old-')) {
+        try { fs.unlinkSync(path.join(resourcesDir, file)); } catch {}
+      }
+    }
+  } catch {}
   const { header, dataOffset } = readAsarHeader(asarPath);
 
   // 1. Locate package.json
@@ -897,9 +969,15 @@ async function patchAsar(asarPath, extensionDir) {
     fs.copyFileSync(asarPath, backupAsar);
   }
 
-  // Replace asar
-  fs.renameSync(tempAsarPath, asarPath);
-  console.log('Patched app.asar successfully.');
+  // Replace asar safely
+  try {
+    safeReplaceAsar(tempAsarPath, asarPath);
+    console.log('Patched app.asar successfully.');
+  } finally {
+    if (fs.existsSync(tempAsarPath)) {
+      try { fs.unlinkSync(tempAsarPath); } catch {}
+    }
+  }
 
   // Copy extension folder next to asar
   installExtensionFolder(resourcesDir, extensionDir);
@@ -1203,8 +1281,23 @@ function updateWindowsExeIntegrity(appPath, asarPath) {
   }
 
   if (replaced) {
-    fs.writeFileSync(exePath, exeBuf);
-    console.log('  Updated ASAR integrity in exe successfully.');
+    let attempts = 0;
+    while (true) {
+      try {
+        fs.writeFileSync(exePath, exeBuf);
+        console.log('  Updated ASAR integrity in exe successfully.');
+        break;
+      } catch (err) {
+        attempts++;
+        if (attempts >= 4) {
+          console.warn(`  Warning: Could not write updated integrity to ${path.basename(exePath)} (${err.message}). Continuing...`);
+          break;
+        }
+        closeRunningClaude();
+        const end = Date.now() + 300;
+        while (Date.now() < end) {}
+      }
+    }
   } else {
     console.warn('  Notice: Could not locate integrity hash pattern in exe.');
   }
@@ -1348,6 +1441,7 @@ $s2.Save()
 // ─── High-Level CLI Actions ─────────────────────────────────
 
 async function cmdInstall(extensionDir) {
+  closeRunningClaude();
   let install = locateClaude();
 
   if (install && install.platform === 'darwin' && !isBundleHealthy(install.appPath)) {
@@ -1389,6 +1483,7 @@ async function cmdInstall(extensionDir) {
 }
 
 async function cmdPatch(extensionDir) {
+  closeRunningClaude();
   const install = locateClaude();
   if (!install) {
     throw new Error('Claude Desktop not found. Use "install" to automatically download and install it.');
@@ -1409,6 +1504,7 @@ async function cmdPatch(extensionDir) {
 }
 
 function cmdUnpatch() {
+  closeRunningClaude();
   const install = locateClaude();
   if (!install) throw new Error('Claude Desktop not found.');
   unpatchAsar(install.asarPath);

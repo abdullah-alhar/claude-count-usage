@@ -83,7 +83,11 @@ if [ -f "$EXT_DIR/scripts/build-dataclasses.js" ]; then
 fi
 log "Extension ready"
 
-# ── 4. Run Injector to patch Claude Desktop ───────────────────
+# ── 4. Close Claude & Run Injector ───────────────────────────
+
+info "Closing Claude Desktop to release file locks..."
+pkill -x "Claude" 2>/dev/null || true
+sleep 1
 
 info "Installing into Claude Desktop..."
 node "$EXT_DIR/desktop-injector.js" install "$EXT_DIR"

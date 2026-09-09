@@ -84,17 +84,26 @@ if exist "%EXT_DIR%\scripts\build-dataclasses.js" (
 )
 echo [OK] Extension ready
 
-:: ── 4. Run Injector to patch Claude Desktop ───────────────────
+:: ── 4. Close Claude & Run Injector ───────────────────────────
 echo.
-echo [Installing] Injecting into Claude Desktop...
+echo [Closing] Closing Claude Desktop to release file locks...
+taskkill /f /im Claude.exe >nul 2>&1
+timeout /t 1 /nobreak >nul 2>&1 || ping -n 2 127.0.0.1 >nul
 
-:: Clear any stale/corrupted packages from earlier incomplete downloads
+:: Clear any stale/corrupted packages and leftover temp files from earlier runs
 del /f /q "%TEMP%\Claude-*.msix" >nul 2>&1
 del /f /q "%TEMP%\Claude-*.zip" >nul 2>&1
+del /f /q "%LOCALAPPDATA%\ClaudeDesktopInjector\Claude\app\resources\app.asar.tmp-*" >nul 2>&1
+del /f /q "%LOCALAPPDATA%\ClaudeDesktopInjector\Claude\resources\app.asar.tmp-*" >nul 2>&1
+del /f /q "%LOCALAPPDATA%\Programs\Claude\resources\app.asar.tmp-*" >nul 2>&1
+
+echo [Installing] Injecting into Claude Desktop...
 
 node "%EXT_DIR%\desktop-injector.js" install "%EXT_DIR%"
 if errorlevel 1 (
+    echo.
     echo [ERROR] Installation failed.
+    echo If Claude Desktop is still open, please close it completely from Task Manager and try again.
     pause
     exit /b 1
 )
@@ -107,7 +116,6 @@ if "!IS_TEMP_SOURCE!"=="1" (
 :: ── 5. Restart Claude ──────────────────────────────────────────
 echo.
 echo [Launch] Starting Claude Desktop...
-taskkill /f /im Claude.exe >nul 2>&1
 ping -n 2 127.0.0.1 >nul
 
 set "CLAUDE_EXE=%LOCALAPPDATA%\ClaudeDesktopInjector\Claude\Claude.exe"
