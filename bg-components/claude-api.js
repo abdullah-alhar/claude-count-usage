@@ -217,7 +217,19 @@ class ClaudeAPI {
 
 	// Fetch usage limits from the /usage endpoint
 	async getUsageLimits() {
-		return this.getRequest(`/organizations/${this.orgId}/usage`);
+		const response = await this.fetchImpl(`${this.baseUrl}/organizations/${this.orgId}/usage`, {
+			headers: {
+				'Content-Type': 'application/json'
+			},
+			method: 'GET'
+		});
+		if (!response.ok) {
+			const err = new Error(`HTTP ${response.status} when fetching usage limits`);
+			err.status = response.status;
+			try { err.body = await response.json(); } catch {}
+			throw err;
+		}
+		return response.json();
 	}
 
 	// Fetch credit balance
@@ -228,18 +240,37 @@ class ClaudeAPI {
 
 	// Fetch usage limits, subscription tier, and credits, and return a UsageData object
 	async getUsageData() {
-		const usageLimitsResponse = await this.getUsageLimits();
-		const subscriptionTier = await this.getSubscriptionTier();
-		let creditsResponse = null;
-		if (usageLimitsResponse.spend?.enabled || usageLimitsResponse.extra_usage?.is_enabled) {
-			creditsResponse = await this.getCredits();
+		try {
+			const usageLimitsResponse = await this.getUsageLimits();
+			if (!usageLimitsResponse || usageLimitsResponse.error) {
+				throw new Error(usageLimitsResponse?.error?.message || 'Usage response contains error');
+			}
+			const subscriptionTier = await this.getSubscriptionTier().catch(() => 'claude_free');
+			let creditsResponse = null;
+			if (usageLimitsResponse.spend?.enabled || usageLimitsResponse.extra_usage?.is_enabled) {
+				creditsResponse = await this.getCredits().catch(() => null);
+			}
+			const usageData = UsageData.fromAPIResponse(usageLimitsResponse, subscriptionTier, creditsResponse);
+			usageData.orgId = this.orgId;
+			usageData.loadError = false;
+			usageData.fetchSuccess = true;
+			// Every consumer - the tab push, the popup, reset notifications - comes through here, so the
+			// free-plan fallback is applied once, in the one place that owns building a UsageData.
+			await applySseUsageFallback(usageData, this);
+			return usageData;
+		} catch (err) {
+			await Log("warn", "getUsageData failed:", err);
+			const subscriptionTier = await this.getSubscriptionTier().catch(() => 'unknown');
+			const errorUsage = new UsageData({
+				limits: { session: null, weekly: null, sonnetWeekly: null, opusWeekly: null, fableWeekly: null },
+				subscriptionTier,
+				orgId: this.orgId,
+				loadError: true,
+				fetchSuccess: false,
+				errorDetails: err.message || String(err)
+			});
+			return errorUsage;
 		}
-		const usageData = UsageData.fromAPIResponse(usageLimitsResponse, subscriptionTier, creditsResponse);
-		usageData.orgId = this.orgId;
-		// Every consumer - the tab push, the popup, reset notifications - comes through here, so the
-		// free-plan fallback is applied once, in the one place that owns building a UsageData.
-		await applySseUsageFallback(usageData, this);
-		return usageData;
 	}
 
 	// Platform operations

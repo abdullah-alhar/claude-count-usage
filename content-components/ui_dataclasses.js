@@ -1,3 +1,4 @@
+/* Generated from shared/dataclasses.js by scripts/build-dataclasses.js — do not edit. */
 /* global CONFIG */
 'use strict';
 
@@ -43,10 +44,24 @@ class UsageData {
 		this.extraUsage = data.extraUsage || null;  // { isEnabled, monthlyLimit, usedCredits } (cents)
 		this.creditBalance = data.creditBalance ?? null;  // cents (from /credits)
 		this.orgId = data.orgId || null;
+		this.loadError = data.loadError === true;
+		this.fetchSuccess = data.fetchSuccess ?? (!this.loadError && (data.limits ? true : false));
+		this.errorDetails = data.errorDetails || null;
 	}
 
 	static fromAPIResponse(apiResponse, subscriptionTier, creditsResponse = null) {
 		const toResetsAt = (isoString) => isoString ? new Date(isoString).getTime() : null;
+
+		// Check for missing response or error response from API
+		if (!apiResponse || apiResponse.error || (typeof apiResponse.status === 'number' && apiResponse.status >= 400)) {
+			return new UsageData({
+				limits: { session: null, weekly: null, sonnetWeekly: null, opusWeekly: null, fableWeekly: null },
+				subscriptionTier: subscriptionTier || 'claude_free',
+				loadError: true,
+				fetchSuccess: false,
+				errorDetails: apiResponse?.error?.message || (apiResponse?.status ? `HTTP ${apiResponse.status}` : 'No response from /usage')
+			});
+		}
 
 		// Old top-level format: { utilization, resets_at }
 		const parseLimit = (obj) => obj ? {
@@ -94,7 +109,9 @@ class UsageData {
 			limits,
 			subscriptionTier,
 			extraUsage,
-			creditBalance
+			creditBalance,
+			loadError: false,
+			fetchSuccess: true
 		});
 	}
 
@@ -272,13 +289,27 @@ class UsageData {
 			this.getBindingWeeklyLimit(modelName)?.percentage >= 100;
 	}
 
+	isLoadError() {
+		return this.loadError === true || this.fetchSuccess === false;
+	}
+
+	isGenuineZeroUsage() {
+		if (this.isLoadError()) return false;
+		if (this.hasNoReportedUsage()) return true;
+		const active = this.getActiveLimits();
+		return active.length > 0 && active.every(limit => limit.percentage === 0);
+	}
+
 	toJSON() {
 		return {
 			limits: this.limits,
 			subscriptionTier: this.subscriptionTier,
 			extraUsage: this.extraUsage,
 			creditBalance: this.creditBalance,
-			orgId: this.orgId
+			orgId: this.orgId,
+			loadError: this.loadError,
+			fetchSuccess: this.fetchSuccess,
+			errorDetails: this.errorDetails
 		};
 	}
 

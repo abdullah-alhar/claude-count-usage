@@ -103,9 +103,16 @@ function renderOrgUsage(orgResult, showLabel) {
 	if (activeLimits.length === 0) {
 		const empty = document.createElement('div');
 		empty.className = 'popup-empty';
-		empty.textContent = usageData.subscriptionTier === 'claude_free'
-			? localize('usage.free_hint')
-			: localize('usage.limits_unavailable');
+		const isError = (typeof usageData.isLoadError === 'function' && usageData.isLoadError()) ||
+			usageData.loadError === true ||
+			usageData.fetchSuccess === false ||
+			usageData.subscriptionTier !== 'claude_free';
+		if (isError) {
+			empty.classList.add('popup-empty-error');
+			empty.textContent = localize('usage.limits_unavailable');
+		} else {
+			empty.textContent = localize('usage.reset_empty_state') || 'Reset \u2014 usage will show up here once you send a message.';
+		}
 		wrapper.appendChild(empty);
 		return wrapper;
 	}

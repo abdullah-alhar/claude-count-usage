@@ -253,9 +253,20 @@ async function updateAllTabsWithUsage(usageData = null) {
 				data: {
 					usageData: data.toJSON()
 				}
-			}).catch(error => Log("warn", `Failed to push usage to tab ${tab.id}:`, error));
 		} catch (error) {
 			await Log("warn", `Failed to update tab ${tab.id} with usage data:`, error);
+			const errorUsage = new UsageData({
+				subscriptionTier: 'unknown',
+				loadError: true,
+				fetchSuccess: false,
+				errorDetails: error.message || String(error)
+			});
+			sendTabMessage(tab.id, {
+				type: 'updateUsage',
+				data: {
+					usageData: errorUsage.toJSON()
+				}
+			}).catch(() => {});
 		}
 	}
 }

@@ -1,7 +1,7 @@
 # Privacy Policy — Claude Count Usage
 
 **Author: Abdullah Alhar**
-**Version: 1.0.0**
+**Version: 1.2**
 
 ---
 

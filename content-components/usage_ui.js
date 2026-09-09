@@ -191,36 +191,43 @@ class UsageSection {
 
 		if (!this.notice) {
 			this.notice = document.createElement('div');
-			this.notice.className = 'ut-usage-notice text-text-400 text-xs';
 			this.elements.barsContainer.appendChild(this.notice);
 		}
 
 		this.notice.replaceChildren();
 
-		// A free account reaching here has either never sent a message in the current window or has
-		// had every window lapse - and a message is genuinely all it takes, since the completion
-		// stream is where these numbers now come from.
-		//
-		// Any other tier reaching here almost certainly did not get an answer at all: getRequest does
-		// not status-check, so an HTTP error on /usage parses into an all-null UsageData that looks
-		// exactly like the free plan's genuinely empty response. Saying "no limits" would assert
-		// something we do not know, so say what we actually know instead.
-		if (usageData.subscriptionTier !== 'claude_free') {
-			this.notice.textContent = localize('usage.limits_unavailable');
-			return;
+		// Determine if this is a failed-to-load / missing data state vs genuine zero usage:
+		// 1) Explicit loadError or fetchSuccess === false flag from API layer
+		// 2) Any paid tier (Pro, Team, Max) where /usage returned nothing - paid tiers always report
+		//    limits when healthy, so an empty response on a non-free account indicates a failed or unauthorized read.
+		const isFailedToLoad = (typeof usageData.isLoadError === 'function' && usageData.isLoadError()) ||
+			usageData.loadError === true ||
+			usageData.fetchSuccess === false ||
+			usageData.subscriptionTier !== 'claude_free';
+
+		if (isFailedToLoad) {
+			// State B: Data missing / failed to load -> warning styling & distinct warning message
+			this.notice.className = 'ut-usage-notice ut-usage-notice-error text-xs';
+
+			const warningTitle = document.createElement('div');
+			warningTitle.className = 'ut-usage-error-title';
+			warningTitle.textContent = localize('usage.limits_unavailable');
+
+			const warningCaveat = document.createElement('div');
+			warningCaveat.className = 'ut-usage-notice-caveat';
+			warningCaveat.textContent = localize('usage.free_caveat');
+
+			this.notice.append(warningTitle, warningCaveat);
+		} else {
+			// State A: Genuine zero usage / fresh reset session -> neutral muted "Reset" message
+			this.notice.className = 'ut-usage-notice ut-usage-notice-reset text-text-400 text-xs';
+
+			const resetMsg = document.createElement('div');
+			resetMsg.className = 'ut-usage-reset-text';
+			resetMsg.textContent = localize('usage.reset_empty_state') || 'Reset \u2014 usage will show up here once you send a message.';
+
+			this.notice.appendChild(resetMsg);
 		}
-
-		const hint = document.createElement('div');
-		hint.textContent = localize('usage.free_hint');
-
-		// Sourcing usage from the stream is a workaround for claude.ai no longer reporting it, and
-		// nothing guarantees the stream keeps carrying it. Say so rather than letting the bars
-		// silently stop updating one day.
-		const caveat = document.createElement('div');
-		caveat.className = 'ut-usage-notice-caveat';
-		caveat.textContent = localize('usage.free_caveat');
-
-		this.notice.append(hint, caveat);
 	}
 
 	formatResetTime(timestamp) {

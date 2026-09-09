@@ -307,29 +307,40 @@
 	transform: none;
 }
 
-/* Stand-in for the limit bars when claude.ai reports no limits (free plan). */
+/* Stand-in for the limit bars when claude.ai reports no limits (free plan / reset / error). */
 .ut-usage-notice {
     font-size: 0.75rem;
-    color: var(--text-400);
     line-height: 1.4;
     padding: 2px 0 6px 0;
 }
 
+/* Neutral, muted styling for genuine zero usage / reset state */
+.ut-usage-notice-reset {
+    color: var(--text-400);
+    opacity: 0.85;
+    padding: 4px 0 6px 0;
+    user-select: none;
+}
+
+/* Visually distinct warning styling for data missing / failed to load */
+.ut-usage-notice-error {
+    color: #ef4444;
+    background: rgba(239, 68, 68, 0.08);
+    border: 1px solid rgba(239, 68, 68, 0.25);
+    border-radius: 6px;
+    padding: 6px 8px;
+    margin-top: 4px;
+}
+
+.ut-usage-notice-error .ut-usage-error-title {
+    font-weight: 500;
+    margin-bottom: 2px;
+}
+
 .ut-usage-notice-caveat {
     margin-top: 4px;
-    opacity: 0.7;
-}
-
-.ut-desktop-footer {
-    font-size: 0.75rem;
-    color: var(--text-400);
-    border-top: 1px solid var(--border-400);
-    text-align: center;
-}
-
-.ut-desktop-footer.ut-sidebar-footer {
-    text-align: left;
-    /*padding: 0 0.5rem 0.5rem 0.5rem;*/
+    opacity: 0.85;
+    font-size: 0.7rem;
 }
 
 /* ── Settings Card ────────────────────────────────────────── */

@@ -1,7 +1,7 @@
 {
 	"manifest_version": 3,
 	"name": "Claude Count Usage",
-	"version": "1.0.0",
+	"version": "1.2",
 	"description": "Track your Claude.ai session and weekly usage. Shows usage bars in sidebar and token/cost/cache stats in the chat header. No telemetry. All data stays on your device.",
 	"author": "Abdullah Alhar",
 	"background": {

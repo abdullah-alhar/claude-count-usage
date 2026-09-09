@@ -1,0 +1,12 @@
+{
+  "name": "claude-count-usage",
+  "version": "1.2",
+  "description": "Track your Claude.ai session and weekly usage in desktop and browser.",
+  "private": true,
+  "scripts": {
+    "test": "node tests/usage-notice.test.js",
+    "build": "node scripts/build-dataclasses.js"
+  },
+  "author": "Abdullah Alhar",
+  "license": "MIT"
+}
