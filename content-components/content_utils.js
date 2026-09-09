@@ -3,6 +3,7 @@
 'use strict';
 
 // Constants
+const isElectron = typeof navigator !== 'undefined' && (navigator.userAgent.includes("Electron") || typeof window.electron !== 'undefined');
 const BLUE_HIGHLIGHT = "#2c84db";
 const RED_WARNING = "#de2929";
 const SUCCESS_GREEN = "#22c55e";
@@ -573,7 +574,95 @@ async function injectStyles() {
 // Each layout has match() to detect the page and anchors to find DOM insertion points.
 // Checked in order; first match() wins.
 
+// Locate sidebar position: under "Customize" and above "Projects" section
+function getSidebarUnderCustomizeAnchor(sidebarRoot) {
+	const asideOrNav = sidebarRoot || document.querySelector('aside') || document.querySelector('nav');
+	if (!asideOrNav) return null;
+
+	const scrollArea = asideOrNav.querySelector('.overflow-y-auto')
+		|| asideOrNav.querySelector('[class*="overflow"]')
+		|| asideOrNav.querySelector('[class*="scroll"]')
+		|| asideOrNav;
+
+	// 1. Look for Customize item (a, button, role=button, or text "Customize")
+	let customizeEl = scrollArea.querySelector('a[href*="customiz"], [data-testid*="customiz"]');
+	if (!customizeEl) {
+		const candidates = scrollArea.querySelectorAll('a, button, [role="button"], [role="link"], span, p, div');
+		for (const el of candidates) {
+			if (el.children.length <= 2 && /^customize$/i.test(el.textContent.trim())) {
+				customizeEl = el.closest('a, button, [role="button"], [role="link"]') || el;
+				break;
+			}
+		}
+	}
+
+	// 2. Look for the Projects section (the section below Customize, with '+' button or heading "Projects")
+	let projectsSection = null;
+	const candidateHeaders = scrollArea.querySelectorAll('div, h2, h3, span, p');
+	for (const el of candidateHeaders) {
+		if (el.children.length <= 2 && /^projects$/i.test(el.textContent.trim())) {
+			// Skip the top navigation link to /projects
+			if (!el.closest('a[href$="/projects"]') && !el.closest('a[href$="/project"]')) {
+				const sectionHeader = el.closest('div[class*="flex"], section') || el;
+				if (customizeEl) {
+					const cRect = customizeEl.getBoundingClientRect();
+					const sRect = sectionHeader.getBoundingClientRect();
+					if (sRect.top >= cRect.top - 5) {
+						projectsSection = sectionHeader;
+						break;
+					}
+				} else {
+					projectsSection = sectionHeader;
+					break;
+				}
+			}
+		}
+	}
+
+	// If projectsSection found, find its top-level block inside scrollArea
+	if (projectsSection) {
+		let block = projectsSection;
+		while (block.parentElement && block.parentElement !== scrollArea) {
+			block = block.parentElement;
+		}
+		if (block && block.parentElement === scrollArea) {
+			return {
+				parent: scrollArea,
+				referenceNode: block,
+				classes: { add: ['shrink-0', 'px-2', 'my-2'] },
+			};
+		}
+		return {
+			parent: projectsSection.parentElement,
+			referenceNode: projectsSection,
+			classes: { add: ['shrink-0', 'px-2', 'my-2'] },
+		};
+	}
+
+	// If customizeEl found, find its row or top nav group to insert after
+	if (customizeEl) {
+		let block = customizeEl;
+		// Walk up to find the top-level block inside scrollArea or the nav group
+		while (block.parentElement && block.parentElement !== scrollArea) {
+			if (block.parentElement.children.length <= 6 && block.parentElement.lastElementChild === block) {
+				block = block.parentElement;
+				break;
+			}
+			block = block.parentElement;
+		}
+		return {
+			insertAfter: block,
+			classes: { add: ['shrink-0', 'px-2', 'my-2'] },
+		};
+	}
+
+	return null;
+}
+
 function getSidebarRegularAnchor() {
+	const underCustomize = getSidebarUnderCustomizeAnchor();
+	if (underCustomize) return underCustomize;
+
 	// Strategy 1: Original selector chain (pre-2026 Claude web)
 	const sidebarNav = document.querySelector('nav.flex');
 	if (sidebarNav) {
@@ -654,6 +743,9 @@ function getSidebarRegularAnchor() {
 }
 
 function getSidebarDesktopAnchor() {
+	const underCustomize = getSidebarUnderCustomizeAnchor();
+	if (underCustomize) return underCustomize;
+
 	// Strategy 1: Primary selectors (older Claude Desktop with dframe classes)
 	const sidebarBody = document.querySelector('.dframe-sidebar-body');
 	if (sidebarBody) {
@@ -695,13 +787,33 @@ function getSidebarDesktopAnchor() {
 
 	// Strategy 3: No dframe classes at all — Claude Desktop dropped them.
 	// Fall through to the regular anchor which has its own broad strategies.
-	return null;
+	return getSidebarRegularAnchor();
 }
 
 // Ultimate fallback: find the sidebar by VISUAL layout, not CSS classes.
 // Scans for a narrow column (100-400px) on the left side of the viewport.
 // This survives any class name reshuffling by Claude Desktop.
 function getLastResortSidebarAnchor() {
+	const underCustomize = getSidebarUnderCustomizeAnchor();
+	if (underCustomize) return underCustomize;
+
+	// Strategy 0: Any aside or nav element on the page
+	const asideOrNav = document.querySelector('aside') || document.querySelector('nav');
+	if (asideOrNav) {
+		const scrollArea = asideOrNav.querySelector('.overflow-y-auto')
+			|| asideOrNav.querySelector('[class*="overflow"]')
+			|| asideOrNav.querySelector('[class*="scroll"]')
+			|| asideOrNav;
+		const referenceNode = Array.from(scrollArea.children)
+			.find(child => !child.classList.contains('ut-usage-sidebar')) || null;
+		console.log(`[CCU] Last-resort Strategy 0: found ${asideOrNav.tagName.toLowerCase()}`);
+		return {
+			parent: scrollArea,
+			referenceNode,
+			classes: { add: ['shrink-0', 'px-2'] },
+		};
+	}
+
 	// Strategy A: Look for the container of navigation links (New, Projects, etc.)
 	// Try various href patterns
 	const navLink = document.querySelector('a[href="/new"]')
@@ -935,9 +1047,12 @@ function getTitleAreaAnchor() {
 }
 
 const pageLayouts = {
-	// Desktop client layouts (checked first — desktop has dframe-sidebar, not nav.flex)
+	// Desktop client layouts (checked first — matches if dframe classes or isElectron)
 	desktopChat: {
-		match() { return !!document.querySelector('aside.dframe-sidebar') && !isCodePage() && !!getConversationId(); },
+		match() {
+			return (!!document.querySelector('aside.dframe-sidebar') || isElectron)
+				&& !isCodePage() && !isIncognitoConversation() && !!getConversationId();
+		},
 		anchors: {
 			sidebar: getSidebarDesktopAnchor,
 			chatArea: getChatAreaRegularAnchor,
@@ -967,7 +1082,10 @@ const pageLayouts = {
 		},
 	},
 	desktopCoworkHome: {
-		match() { return !!document.querySelector('aside.dframe-sidebar') && window.location.pathname === '/task/new'; },
+		match() {
+			return (!!document.querySelector('aside.dframe-sidebar') || isElectron)
+				&& window.location.pathname === '/task/new';
+		},
 		anchors: {
 			sidebar: getSidebarDesktopAnchor,
 			chatArea() {
@@ -988,7 +1106,10 @@ const pageLayouts = {
 		},
 	},
 	desktopHome: {
-		match() { return !!document.querySelector('aside.dframe-sidebar') && !isCodePage() && !getConversationId(); },
+		match() {
+			return (!!document.querySelector('aside.dframe-sidebar') || isElectron)
+				&& !isCodePage() && !getConversationId();
+		},
 		anchors: {
 			sidebar: getSidebarDesktopAnchor,
 			chatArea: getChatAreaRegularAnchor,
@@ -1101,8 +1222,11 @@ const LayoutManager = {
 	getAnchor(anchorName) {
 		const layout = this.detectLayout();
 		const anchorFn = layout?.anchors?.[anchorName];
-		if (!anchorFn) return null;
-		return anchorFn();
+		let anchor = anchorFn ? anchorFn() : null;
+		if (!anchor && anchorName === 'sidebar') {
+			anchor = getLastResortSidebarAnchor();
+		}
+		return anchor;
 	},
 };
 

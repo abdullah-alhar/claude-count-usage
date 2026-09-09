@@ -689,15 +689,22 @@ app.on('browser-window-created', (event, win) => {
 });
 
 app.on('web-contents-created', (event, contents) => {
+  contents.on('console-message', (ev, level, message) => {
+    const text = typeof message === 'string' ? message : (typeof level === 'string' ? level : ((ev && ev.message) || ''));
+    if (text.includes('[CCU]') || text.includes('UsageTracker') || text.includes('Last-resort') || text.includes('Count Usage') || text.includes('[SIDEBAR DIAG') || text.includes('Error') || text.startsWith('CUT_')) {
+      console.log('[Renderer]', text);
+    }
+  });
+
   if (claudeWebContents) return;
   const check = (url) => {
     if (claudeWebContents) return;
-    if (url && url.includes('claude.ai')) {
+    if (url && (url.includes('claude.ai') || url.includes('localhost'))) {
       claudeWebContents = contents;
       setupPolyfills();
     }
   };
-  contents.on('did-start-navigation', (d) => check((d && d.url) || ''));
+  contents.on('did-start-navigation', (_ev, url) => check(url || ''));
   contents.once('dom-ready', () => check(contents.getURL()));
 });
 
@@ -733,10 +740,14 @@ async function patchAsar(asarPath, extensionDir) {
   if (currentMainNode) {
     const currentMainBuf = readFileFromAsar(asarPath, dataOffset, currentMainNode);
     if (currentMainBuf && currentMainBuf.toString('utf8').includes(MARKER)) {
-      console.log('app.asar already has Claude Count Usage wrapper installed (idempotent).');
-      // Update extension files next to asar
-      installExtensionFolder(resourcesDir, extensionDir);
-      return { asarPath, alreadyPatched: true };
+      console.log('app.asar already has Claude Count Usage wrapper installed; refreshing wrapper & extension...');
+      if (!originalMain) {
+        if (getNode(header, '.vite/build/index.pre.js')) {
+          originalMain = '.vite/build/index.pre.js';
+        } else {
+          originalMain = 'index.js';
+        }
+      }
     }
   }
 
