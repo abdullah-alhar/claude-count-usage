@@ -1,12 +1,17 @@
 // Configuration object (moved from constants.json)
 const CONFIG = {
-	"OUTPUT_TOKEN_MULTIPLIER": 4,
+	// Derived from Anthropic's published per-token pricing (Sep 2026):
+	//   Fable: $10/$50, Opus: $5/$25, Sonnet: $3/$15, Haiku: $1/$5 per MTok (input/output)
+	// All models have a uniform 5x output/input ratio.
+	"OUTPUT_TOKEN_MULTIPLIER": 5,
 	"MODELS": [
 		"Fable",
 		"Opus",
 		"Sonnet",
 		"Haiku"
 	],
+	// Weights = input price in $/MTok, normalized to Haiku = 1.
+	// Source: https://docs.anthropic.com/en/docs/about-claude/models (Sep 2026)
 	"MODEL_WEIGHTS": {
 		"Fable": 10,
 		"Opus": 5,

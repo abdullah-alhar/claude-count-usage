@@ -136,6 +136,56 @@ function stopAutoRefresh() {
 	}
 }
 
+// Calibration data viewer
+document.getElementById('showCalibration').addEventListener('click', toggleCalibration);
+
+async function toggleCalibration() {
+	const section = document.getElementById('calibration-section');
+	if (section.style.display === 'none') {
+		section.style.display = 'block';
+		document.getElementById('showCalibration').textContent = 'Hide Calibration';
+		await loadCalibrationData();
+	} else {
+		section.style.display = 'none';
+		document.getElementById('showCalibration').textContent = 'Show Calibration';
+	}
+}
+
+async function loadCalibrationData() {
+	try {
+		const entries = await chrome.runtime.sendMessage({ type: 'getCalibrationData' });
+		const summaryEl = document.getElementById('calibration-summary');
+		const dataEl = document.getElementById('calibration-data');
+
+		if (!entries || entries.length === 0) {
+			summaryEl.textContent = 'No calibration data yet. Add an API key in settings to start collecting.';
+			dataEl.textContent = '';
+			return;
+		}
+
+		// entries is [[key, value], ...] from StoredMap
+		const values = entries.map(([, v]) => v).sort((a, b) => b.ts - a.ts);
+		const ratios = values.filter(v => v.ratio && isFinite(v.ratio)).map(v => v.ratio);
+		const avgRatio = ratios.length > 0 ? (ratios.reduce((a, b) => a + b, 0) / ratios.length).toFixed(3) : 'N/A';
+		const minRatio = ratios.length > 0 ? Math.min(...ratios).toFixed(3) : 'N/A';
+		const maxRatio = ratios.length > 0 ? Math.max(...ratios).toFixed(3) : 'N/A';
+
+		summaryEl.innerHTML = `<b>${values.length}</b> entries | ` +
+			`Avg ratio (real/o200k): <b>${avgRatio}</b> | ` +
+			`Range: <b>${minRatio}</b> – <b>${maxRatio}</b> | ` +
+			`Current multiplier: <b>${values[0]?.multiplier || '?'}</b>`;
+
+		const lines = values.slice(0, 100).map(v => {
+			const time = new Date(v.ts).toLocaleTimeString();
+			const errPct = v.estimated > 0 ? (((v.real - v.estimated) / v.estimated) * 100).toFixed(1) : '?';
+			return `${time}  real=${String(v.real).padStart(7)} est=${String(v.estimated).padStart(7)} o200k=${String(v.o200k).padStart(7)} ratio=${String(v.ratio).padStart(6)} err=${errPct}% len=${v.len}`;
+		});
+		dataEl.textContent = lines.join('\n');
+	} catch (e) {
+		document.getElementById('calibration-summary').textContent = 'Error loading: ' + e.message;
+	}
+}
+
 // Initial setup
 showLogs();
 updateDebugStatus();

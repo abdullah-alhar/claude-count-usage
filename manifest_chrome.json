@@ -22,6 +22,7 @@
 				"content-components/electron_reciever.js",
 				"content-components/ui_dataclasses.js",
 				"content-components/usage_ui.js",
+				"content-components/settings_card.js",
 				"content-components/length_ui.js"
 			]
 		},

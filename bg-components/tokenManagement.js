@@ -69,6 +69,7 @@ class TokenCounter {
 		this.tokenizer = GPTTokenizer_o200k_base;
 		this.ESTIMATION_MULTIPLIER = CONFIG.ESTIMATION_MULTIPLIER;
 		this.fileTokenCache = new StoredMap("fileTokens");
+		this.calibrationLog = new StoredMap("tokenCalibration");
 	}
 
 	// Core text counting - the main workhorse
@@ -80,7 +81,11 @@ class TokenCounter {
 		if (apiKey) {
 			try {
 				const tokens = await this.callMessageAPI([text], [], apiKey);
-				if (tokens > 0) return tokens;
+				if (tokens > 0) {
+					// Log calibration data: real vs estimated
+					await this.logCalibration(text, tokens);
+					return tokens;
+				}
 			} catch (error) {
 				await Log("warn", "API token counting failed, falling back to estimation:", error);
 			}
@@ -105,7 +110,12 @@ class TokenCounter {
 		if (apiKey) {
 			try {
 				const tokens = await this.callMessageAPI(userMessages, assistantMessages, apiKey);
-				if (tokens > 0) return tokens;
+				if (tokens > 0) {
+					// Log calibration data for the whole conversation
+					const allText = [...userMessages, ...assistantMessages].join('\n');
+					await this.logCalibration(allText, tokens);
+					return tokens;
+				}
 			} catch (error) {
 				await Log("warn", "API message counting failed, falling back to estimation:", error);
 			}
@@ -118,6 +128,39 @@ class TokenCounter {
 			total += Math.round(this.tokenizer.countTokens(msg) * this.ESTIMATION_MULTIPLIER);
 		}
 		return total;
+	}
+
+	// Log both estimated and real token counts for calibration.
+	// Rolling window of last 200 entries, viewable via debug.html.
+	async logCalibration(text, realTokens) {
+		try {
+			const o200kRaw = this.tokenizer.countTokens(text);
+			const estimated = Math.round(o200kRaw * this.ESTIMATION_MULTIPLIER);
+			const ratio = o200kRaw > 0 ? (realTokens / o200kRaw).toFixed(3) : 'N/A';
+
+			const entry = {
+				ts: Date.now(),
+				real: realTokens,
+				o200k: o200kRaw,
+				estimated,
+				ratio: parseFloat(ratio),
+				len: text.length,
+				multiplier: this.ESTIMATION_MULTIPLIER
+			};
+
+			// Use timestamp as key, auto-expires after 30 days
+			await this.calibrationLog.set(String(entry.ts), entry, 30 * 24 * 60 * 60 * 1000);
+
+			await Log(`Calibration: real=${realTokens} est=${estimated} o200k=${o200kRaw} ratio=${ratio} len=${text.length}`);
+		} catch (e) {
+			// Never let calibration logging break the main flow
+			await Log("warn", "Calibration log error:", e);
+		}
+	}
+
+	// Get all calibration data (for debug page)
+	async getCalibrationData() {
+		return await this.calibrationLog.entries();
 	}
 
 	// Count file tokens with caching

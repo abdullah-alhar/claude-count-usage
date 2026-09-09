@@ -193,7 +193,10 @@ class LengthUI {
 		// Length
 		const lengthColor = conversationData.isLong() ? RED_WARNING : BLUE_HIGHLIGHT;
 		const lengthLabel = conversationData.lengthIsEstimate ? localize('length.label_estimate') : localize('length.label');
-		length.innerHTML = `${lengthLabel}: <span style="color: ${lengthColor}">${fmtNum(conversationData.length)}</span> ${localize('common.unit_tokens')}`;
+		const estimateBadge = conversationData.lengthIsEstimate
+			? ' <span class="ut-estimate-badge" title="' + (localize('length.tooltip_length_note') || 'Estimated — add API key for exact count') + '">~est</span>'
+			: '';
+		length.innerHTML = `${lengthLabel}: <span style="color: ${lengthColor}">${fmtNum(conversationData.length)}</span> ${localize('common.unit_tokens')}${estimateBadge}`;
 
 		// Update length tooltip based on estimate status
 		const baseTooltip = localize('length.tooltip_length');

@@ -140,11 +140,17 @@
 
 <body>
 	<pre id="logs"></pre>
+	<div id="calibration-section" style="display:none; margin-bottom:12px;">
+		<h3 style="color:#9cdcfe; margin:0 0 6px 0; font-size:14px;">Token Calibration Data</h3>
+		<div id="calibration-summary" style="font-size:13px; color:#d4d4d4; margin-bottom:6px;"></div>
+		<pre id="calibration-data" style="max-height:200px; overflow-y:auto; font-size:12px; flex:none;"></pre>
+	</div>
 	<div class="button-container">
 		<button id="refresh">Refresh Logs</button>
 		<button id="clear">Clear Logs</button>
 		<button id="enableDebug">Enable Debug Mode (1 hour)</button>
 		<button id="enablePermanentDebug">Enable Debug Mode (Permanent)</button>
+		<button id="showCalibration">Show Calibration</button>
 		<button id="returnToClaude" style="display: none;">Return to claude.ai</button>
 		<label style="display: flex; align-items: center; gap: 5px;">
 			<input type="checkbox" id="autoUpdate" checked>

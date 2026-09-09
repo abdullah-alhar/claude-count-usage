@@ -446,6 +446,17 @@ function installDownloadedClaude(filePath) {
       execFileSync('xattr', ['-cr', appDest], { stdio: 'ignore' });
     } catch {}
 
+    const shipItPath = path.join(appDest, 'Contents', 'Frameworks',
+      'Squirrel.framework', 'Resources', 'ShipIt');
+    try {
+      if (fs.existsSync(shipItPath)) {
+        fs.rmSync(shipItPath, { force: true });
+        console.log('Removed ShipIt to prevent Claude Desktop self-updates.');
+      }
+    } catch (e) {
+      console.warn('Could not remove ShipIt:', e.message);
+    }
+
     return appDest;
   }
 
@@ -1092,32 +1103,47 @@ function updateWindowsExeIntegrity(appPath, asarPath) {
 function updateInfoPlistHash(appPath, asarPath) {
   if (os.platform() !== 'darwin') return;
   const infoPlist = path.join(appPath, 'Contents', 'Info.plist');
-  if (!fs.existsSync(infoPlist)) return;
+  if (!fs.existsSync(infoPlist)) {
+    throw new Error(`Info.plist not found at ${infoPlist}`);
+  }
+
+  const headerHash = computeAsarHeaderHash(asarPath);
+  console.log(`Updating ElectronAsarIntegrity in Info.plist to: ${headerHash}`);
 
   try {
-    const headerHash = computeAsarHeaderHash(asarPath);
-    console.log(`Updating ElectronAsarIntegrity in Info.plist to: ${headerHash}`);
-
+    execFileSync('/usr/libexec/PlistBuddy', [
+      '-c',
+      `Set :ElectronAsarIntegrity:Resources/app.asar:hash ${headerHash}`,
+      '-c',
+      'Save',
+      infoPlist
+    ]);
+  } catch {
     try {
       execFileSync('/usr/libexec/PlistBuddy', [
         '-c',
-        `Set :ElectronAsarIntegrity:Resources/app.asar:hash ${headerHash}`,
+        `Add :ElectronAsarIntegrity:Resources/app.asar:hash string ${headerHash}`,
+        '-c',
+        'Save',
         infoPlist
       ]);
-    } catch {
-      try {
-        execFileSync('/usr/libexec/PlistBuddy', [
-          '-c',
-          `Add :ElectronAsarIntegrity:Resources/app.asar:hash string ${headerHash}`,
-          infoPlist
-        ]);
-      } catch (e) {
-        console.warn('PlistBuddy notice:', e.message);
-      }
+    } catch (e) {
+      throw new Error(`Failed to write ElectronAsarIntegrity to Info.plist: ${e.message}`);
     }
-  } catch (err) {
-    console.warn('Could not compute or update asar hash in Info.plist:', err.message);
   }
+
+  const readBack = execFileSync('/usr/libexec/PlistBuddy', [
+    '-c',
+    'Print :ElectronAsarIntegrity:Resources/app.asar:hash',
+    infoPlist
+  ], { encoding: 'utf8' }).trim();
+
+  if (readBack !== headerHash) {
+    throw new Error(
+      `ElectronAsarIntegrity verification mismatch in Info.plist: expected "${headerHash}", read back "${readBack}"`
+    );
+  }
+  console.log('Verified ElectronAsarIntegrity in Info.plist matches asar header hash.');
 }
 
 function signMac(appPath) {
@@ -1243,6 +1269,10 @@ async function cmdInstall(extensionDir) {
     setupWindowsShortcuts(install.appPath);
   }
 
+  if (!isAsarPatched(install.asarPath)) {
+    throw new Error(`Verification failed: ${install.asarPath} does not contain the injection marker after patching.`);
+  }
+
   console.log('\n Claude Count Usage installed successfully into Claude Desktop!');
 }
 
@@ -1260,6 +1290,9 @@ async function cmdPatch(extensionDir) {
     updateWindowsExeIntegrity(install.appPath, install.asarPath);
     setupWindowsShortcuts(install.appPath);
   }
+  if (!isAsarPatched(install.asarPath)) {
+    throw new Error(`Verification failed: ${install.asarPath} does not contain the injection marker after patching.`);
+  }
   console.log('Patched successfully.');
 }
 
@@ -1274,26 +1307,30 @@ function cmdUnpatch() {
   console.log('Unpatched and restored original Claude Desktop.');
 }
 
+function isAsarPatched(asarPath) {
+  try {
+    const { header, dataOffset } = readAsarHeader(asarPath);
+    const pkgNode = getNode(header, 'package.json');
+    if (!pkgNode) return false;
+    const pkg = JSON.parse(readFileFromAsar(asarPath, dataOffset, pkgNode).toString('utf8'));
+    const mainNode = getNode(header, pkg.main || 'index.js');
+    if (!mainNode) return false;
+    const mainContent = readFileFromAsar(asarPath, dataOffset, mainNode).toString('utf8');
+    return mainContent.includes(MARKER);
+  } catch {
+    return false;
+  }
+}
+
 function cmdCheck() {
   const install = locateClaude();
   if (!install) {
     console.log('NOT_INSTALLED');
     process.exit(1);
   }
-  const { header, dataOffset } = readAsarHeader(install.asarPath);
-  const pkgNode = getNode(header, 'package.json');
-  if (!pkgNode) {
-    console.log('INVALID_ASAR');
-    process.exit(1);
-  }
-  const pkg = JSON.parse(readFileFromAsar(install.asarPath, dataOffset, pkgNode).toString('utf8'));
-  const mainNode = getNode(header, pkg.main || 'index.js');
-  if (mainNode) {
-    const mainContent = readFileFromAsar(install.asarPath, dataOffset, mainNode).toString('utf8');
-    if (mainContent.includes(MARKER)) {
-      console.log('PATCHED');
-      return;
-    }
+  if (isAsarPatched(install.asarPath)) {
+    console.log('PATCHED');
+    return;
   }
   console.log('UNPATCHED');
 }
@@ -1402,6 +1439,8 @@ module.exports = {
   unpatchAsar,
   signMac,
   readAsarHeader,
+  isAsarPatched,
+  updateInfoPlistHash,
   cmdLocate,
   cmdDelete,
   MARKER

@@ -556,6 +556,11 @@ async function getTotalTokensTracked() {
 }
 messageRegistry.register(getTotalTokensTracked);
 
+async function getCalibrationData() {
+	return await tokenCounter.getCalibrationData();
+}
+messageRegistry.register(getCalibrationData);
+
 // Main handler function
 async function handleMessageFromContent(message, sender) {
 	return messageRegistry.handle(message, sender);

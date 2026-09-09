@@ -288,6 +288,17 @@ async function setSidebarDisplayPrefs(prefs) {
 	await browser.storage.local.set({ [SIDEBAR_DISPLAY_KEY]: prefs });
 }
 
+// Convenience: toggle a single key without touching the rest.
+async function setSidebarDisplayPref(key, visible) {
+	const prefs = await getSidebarDisplayPrefs();
+	if (visible) {
+		delete prefs[key]; // Missing key = visible (default)
+	} else {
+		prefs[key] = false;
+	}
+	await setSidebarDisplayPrefs(prefs);
+}
+
 function isSidebarItemVisible(prefs, key) {
 	return prefs[key] !== false;
 }
@@ -563,48 +574,242 @@ async function injectStyles() {
 // Checked in order; first match() wins.
 
 function getSidebarRegularAnchor() {
+	// Strategy 1: Original selector chain (pre-2026 Claude web)
 	const sidebarNav = document.querySelector('nav.flex');
-	if (!sidebarNav) return null;
+	if (sidebarNav) {
+		const containerWrapper = sidebarNav.querySelector('.flex.flex-grow.flex-col.overflow-y-auto');
+		const containers = containerWrapper?.querySelectorAll('.flex-1.relative');
+		if (containers?.length) {
+			let mainContainer = containers[containers.length - 1].querySelector('.px-2.mt-4');
+			if (!mainContainer) mainContainer = containers[containers.length - 1].querySelector('.px-2.pt-2');
+			if (mainContainer) {
+				const starredSection = mainContainer.querySelector('div.flex.flex-col.mb-4');
+				const prefSwitcher = mainContainer.querySelector('.preset-switcher-section');
+				const referenceNode = prefSwitcher || starredSection || mainContainer.firstChild || null;
+				return {
+					parent: mainContainer,
+					referenceNode,
+					classes: { remove: ['px-2'] },
+				};
+			}
+		}
 
-	const containerWrapper = sidebarNav.querySelector('.flex.flex-grow.flex-col.overflow-y-auto');
-	const containers = containerWrapper?.querySelectorAll('.flex-1.relative');
-	if (!containers) return null;
+		// Strategy 2: nav.flex exists but inner structure changed — find any scrollable area
+		const scrollArea = sidebarNav.querySelector('.overflow-y-auto')
+			|| sidebarNav.querySelector('[class*="overflow"]');
+		if (scrollArea) {
+			// Find the deepest container that holds chat items
+			const chatContainer = scrollArea.querySelector('.px-2') || scrollArea;
+			return {
+				parent: chatContainer,
+				referenceNode: chatContainer.firstElementChild || null,
+			};
+		}
 
-	let mainContainer = containers[containers.length - 1].querySelector('.px-2.mt-4');
-	if (!mainContainer) mainContainer = containers[containers.length - 1].querySelector('.px-2.pt-2');
-	if (!mainContainer) return null;
+		// Strategy 3: Just mount at the top of the nav
+		return {
+			parent: sidebarNav,
+			referenceNode: sidebarNav.firstElementChild || null,
+			classes: { add: ['px-2'] },
+		};
+	}
 
-	const starredSection = mainContainer.querySelector('div.flex.flex-col.mb-4');
-	const prefSwitcher = mainContainer.querySelector('.preset-switcher-section');
-	const referenceNode = prefSwitcher || starredSection || mainContainer.firstChild || null;
+	// Strategy 4: No nav.flex — look for sidebar by structure
+	// Claude's sidebar typically contains links to /new, /projects, etc.
+	const sidebarLink = document.querySelector('a[href="/new"]')
+		|| document.querySelector('a[href="/projects"]')
+		|| document.querySelector('a[href*="/project"]');
+	if (sidebarLink) {
+		// Walk up to find the sidebar root (usually 3-5 levels up)
+		let sidebar = sidebarLink.parentElement;
+		for (let i = 0; i < 6 && sidebar; i++) {
+			// The sidebar root is typically a wide container with overflow-y-auto somewhere inside
+			if (sidebar.offsetHeight > 200 && sidebar.offsetWidth > 100 && sidebar.offsetWidth < 400) {
+				break;
+			}
+			sidebar = sidebar.parentElement;
+		}
 
-	return {
-		parent: mainContainer,
-		referenceNode,
-		classes: { remove: ['px-2'] },
-	};
+		if (sidebar) {
+			const scrollArea = sidebar.querySelector('.overflow-y-auto')
+				|| sidebar.querySelector('[style*="overflow"]')
+				|| sidebar;
+
+			// Look for the section AFTER the nav links (where "Chats" starts)
+			const chatSection = scrollArea.querySelector('[class*="mt-"]')
+				|| scrollArea.querySelector('[class*="pt-"]');
+			const mountPoint = chatSection || scrollArea;
+
+			return {
+				parent: mountPoint,
+				referenceNode: mountPoint.firstElementChild || null,
+				classes: { add: ['px-2'] },
+			};
+		}
+	}
+
+	// Diagnostic dump when nothing works
+	dumpSidebarDiagnostics('regular');
+	return null;
 }
 
 function getSidebarDesktopAnchor() {
+	// Strategy 1: Primary selectors (older Claude Desktop with dframe classes)
 	const sidebarBody = document.querySelector('.dframe-sidebar-body');
-	if (!sidebarBody) return null;
+	if (sidebarBody) {
+		const navScroll = sidebarBody.querySelector('.dframe-nav-scroll');
+		if (navScroll) {
+			const referenceNode = Array.from(navScroll.children)
+				.find(child => !child.classList.contains('ut-usage-sidebar')) || null;
+			return {
+				parent: navScroll,
+				referenceNode,
+				classes: { add: ['shrink-0'] },
+			};
+		}
+		// dframe-sidebar-body exists but inner structure changed
+		const scrollChild = sidebarBody.querySelector('[class*="scroll"]')
+			|| sidebarBody.querySelector('.overflow-y-auto')
+			|| sidebarBody;
+		return {
+			parent: scrollChild,
+			referenceNode: scrollChild.firstElementChild || null,
+			classes: { add: ['shrink-0'] },
+		};
+	}
 
-	const navScroll = sidebarBody.querySelector('.dframe-nav-scroll');
-	if (!navScroll) return null;
+	// Strategy 2: aside.dframe-sidebar exists but no body class
+	const sidebar = document.querySelector('aside.dframe-sidebar');
+	if (sidebar) {
+		const scrollArea = sidebar.querySelector('.overflow-y-auto')
+			|| sidebar.querySelector('[class*="scroll"]')
+			|| sidebar;
+		const referenceNode = Array.from(scrollArea.children)
+			.find(child => !child.classList.contains('ut-usage-sidebar')) || null;
+		return {
+			parent: scrollArea,
+			referenceNode,
+			classes: { add: ['shrink-0'] },
+		};
+	}
 
-	// Mount INSIDE the scroll area, above the recents, rather than as a fixed block above it.
-	// Sitting outside meant our ~220px of bars ate the scroll area's flex basis: on a short
-	// viewport the recents collapsed to a few pixels and our own content overflowed onto the
-	// bottom tray, with no way to scroll any of it back. Inside, everything scrolls together.
-	// shrink-0 keeps the bars at full height instead of being squashed by the flex column.
-	const referenceNode = Array.from(navScroll.children)
-		.find(child => !child.classList.contains('ut-usage-sidebar')) || null;
+	// Strategy 3: No dframe classes at all — Claude Desktop dropped them.
+	// Fall through to the regular anchor which has its own broad strategies.
+	return null;
+}
 
-	return {
-		parent: navScroll,
-		referenceNode,
-		classes: { add: ['shrink-0'] },
+// Ultimate fallback: find the sidebar by VISUAL layout, not CSS classes.
+// Scans for a narrow column (100-400px) on the left side of the viewport.
+// This survives any class name reshuffling by Claude Desktop.
+function getLastResortSidebarAnchor() {
+	// Strategy A: Look for the container of navigation links (New, Projects, etc.)
+	// Try various href patterns
+	const navLink = document.querySelector('a[href="/new"]')
+		|| document.querySelector('a[href="/projects"]')
+		|| document.querySelector('a[href^="/chat"]')
+		|| document.querySelector('a[href="/recents"]')
+		|| document.querySelector('a[href="/"]');
+
+	if (navLink) {
+		// Walk up from the link to find a sidebar-width container
+		let el = navLink;
+		for (let i = 0; i < 10 && el && el !== document.body; i++) {
+			el = el.parentElement;
+			const rect = el.getBoundingClientRect();
+			// Sidebar: 100-400px wide, starts near left edge, tall
+			if (rect.width > 100 && rect.width < 400 && rect.left < 50 && rect.height > 200) {
+				console.log(`[CCU] Last-resort: found sidebar via navLink walk. tag=${el.tagName} class="${(el.className || '').toString().substring(0, 60)}"`);
+				// Find scrollable area inside, or use the element itself
+				const scrollArea = el.querySelector('.overflow-y-auto')
+					|| el.querySelector('[style*="overflow"]')
+					|| el;
+				return {
+					parent: scrollArea,
+					referenceNode: scrollArea.firstElementChild || null,
+					classes: { add: ['shrink-0', 'px-2'] },
+				};
+			}
+		}
+	}
+
+	// Strategy B: Scan body's direct children for a narrow left column
+	for (const child of document.body.children) {
+		const rect = child.getBoundingClientRect();
+		if (rect.width > 100 && rect.width < 400 && rect.left < 50 && rect.height > 200) {
+			// This looks like a sidebar. Find scrollable area inside.
+			const scrollArea = child.querySelector('.overflow-y-auto')
+				|| child.querySelector('[style*="overflow"]');
+			if (scrollArea) {
+				console.log(`[CCU] Last-resort: found sidebar via body scan. tag=${child.tagName} class="${(child.className || '').toString().substring(0, 60)}"`);
+				return {
+					parent: scrollArea,
+					referenceNode: scrollArea.firstElementChild || null,
+					classes: { add: ['shrink-0', 'px-2'] },
+				};
+			}
+		}
+	}
+
+	// Strategy C: Scan one level deeper
+	for (const child of document.body.children) {
+		for (const grandchild of child.children) {
+			const rect = grandchild.getBoundingClientRect();
+			if (rect.width > 100 && rect.width < 400 && rect.left < 50 && rect.height > 200) {
+				const scrollArea = grandchild.querySelector('.overflow-y-auto')
+					|| grandchild.querySelector('[style*="overflow"]')
+					|| grandchild;
+				console.log(`[CCU] Last-resort: found sidebar via deep scan. tag=${grandchild.tagName} class="${(grandchild.className || '').toString().substring(0, 60)}"`);
+				return {
+					parent: scrollArea,
+					referenceNode: scrollArea.firstElementChild || null,
+					classes: { add: ['shrink-0', 'px-2'] },
+				};
+			}
+		}
+	}
+
+	console.log('[CCU] Last-resort sidebar detection also failed.');
+	return null;
+}
+
+// Dump DOM info to the debug log when sidebar can't be found
+function dumpSidebarDiagnostics(source) {
+	if (typeof Log !== 'function') return;
+
+	const checks = {
+		'aside.dframe-sidebar': !!document.querySelector('aside.dframe-sidebar'),
+		'.dframe-sidebar-body': !!document.querySelector('.dframe-sidebar-body'),
+		'.dframe-nav-scroll': !!document.querySelector('.dframe-nav-scroll'),
+		'nav.flex': !!document.querySelector('nav.flex'),
+		'nav (any)': !!document.querySelector('nav'),
+		'aside (any)': !!document.querySelector('aside'),
+		'a[href="/new"]': !!document.querySelector('a[href="/new"]'),
+		'a[href="/projects"]': !!document.querySelector('a[href="/projects"]'),
+		'[data-testid="model-selector-dropdown"]': !!document.querySelector('[data-testid="model-selector-dropdown"]'),
+		'.overflow-y-auto': document.querySelectorAll('.overflow-y-auto').length,
 	};
+
+	// Dump the first few levels of body's children
+	const bodyChildren = Array.from(document.body.children).slice(0, 10).map(el => {
+		const tag = el.tagName.toLowerCase();
+		const cls = el.className ? `.${String(el.className).split(/\s+/).slice(0, 5).join('.')}` : '';
+		const id = el.id ? `#${el.id}` : '';
+		return `${tag}${id}${cls}`;
+	});
+
+	Log('warn', `[SIDEBAR DIAG: ${source}] Selectors: ${JSON.stringify(checks)}`);
+	Log('warn', `[SIDEBAR DIAG: ${source}] body children: ${bodyChildren.join(' | ')}`);
+
+	// Find ALL nav and aside elements and dump their structures
+	for (const tag of ['nav', 'aside']) {
+		document.querySelectorAll(tag).forEach((el, i) => {
+			const cls = String(el.className || '').split(/\s+/).slice(0, 8).join(' ');
+			const childTags = Array.from(el.children).slice(0, 5).map(c => {
+				return `${c.tagName.toLowerCase()}.${String(c.className || '').split(/\s+/).slice(0, 4).join('.')}`;
+			});
+			Log('warn', `[SIDEBAR DIAG] ${tag}[${i}] class="${cls}" children=[${childTags.join(', ')}]`);
+		});
+	}
 }
 
 function getChatAreaRegularAnchor() {
@@ -986,6 +1191,12 @@ async function initExtension() {
 			elapsed += interval;
 		}
 
+		if (!sidebarAnchor) {
+			// Last resort: try to find any narrow left-side column on the page
+			console.log('[CCU] No sidebar anchor from LayoutManager. Trying last-resort detection...');
+			sidebarAnchor = getLastResortSidebarAnchor();
+		}
+
 		if (sidebarAnchor) {
 			if (sidebarAnchor.parent.getAttribute('data-script-loaded')) {
 				await Log('Script already running, stopping duplicate');
@@ -999,6 +1210,29 @@ async function initExtension() {
 		const verificationLoginScreen = document.querySelector(SELECTORS.VERIF_LOGIN_SCREEN);
 		if (!initialLoginScreen && !verificationLoginScreen) {
 			await Log("warn", 'No sidebar anchor found and no login screen detected, proceeding anyway');
+			// Dump diagnostic info to console for debugging
+			console.log('[CCU] SIDEBAR DETECTION FAILED. DOM dump for debugging:');
+			console.log('[CCU] aside.dframe-sidebar:', !!document.querySelector('aside.dframe-sidebar'));
+			console.log('[CCU] nav.flex:', !!document.querySelector('nav.flex'));
+			console.log('[CCU] nav (any):', document.querySelectorAll('nav').length);
+			console.log('[CCU] aside (any):', document.querySelectorAll('aside').length);
+			console.log('[CCU] a[href="/new"]:', !!document.querySelector('a[href="/new"]'));
+			console.log('[CCU] a[href="/projects"]:', !!document.querySelector('a[href="/projects"]'));
+			console.log('[CCU] .overflow-y-auto:', document.querySelectorAll('.overflow-y-auto').length);
+			// Dump body > children structure
+			Array.from(document.body.children).slice(0, 8).forEach((el, i) => {
+				const tag = el.tagName?.toLowerCase();
+				const cls = (el.className || '').toString().substring(0, 100);
+				const rect = el.getBoundingClientRect();
+				console.log(`[CCU] body>child[${i}]: <${tag}> class="${cls}" rect=${Math.round(rect.width)}x${Math.round(rect.height)} @${Math.round(rect.left)},${Math.round(rect.top)}`);
+				// Also dump first 3 children
+				Array.from(el.children).slice(0, 3).forEach((c, j) => {
+					const ctag = c.tagName?.toLowerCase();
+					const ccls = (c.className || '').toString().substring(0, 80);
+					const crect = c.getBoundingClientRect();
+					console.log(`[CCU]   child[${i}][${j}]: <${ctag}> class="${ccls}" rect=${Math.round(crect.width)}x${Math.round(crect.height)} @${Math.round(crect.left)},${Math.round(crect.top)}`);
+				});
+			});
 			break;
 		}
 		await Log('Login screen detected, waiting before retry...');
