@@ -996,7 +996,6 @@ function shouldIgnoreExtensionEntry(name) {
 
   // Version control, dependency, and build scratch folders
   if (lower === '.git' || lower === '.github' || lower === 'node_modules') return true;
-  if (lower === 'claude-desktop-injector') return true;
 
   // macOS app bundles (e.g. Install.app, Uninstall.app with Icon\r)
   if (lower.endsWith('.app')) return true;
@@ -1006,7 +1005,7 @@ function shouldIgnoreExtensionEntry(name) {
   if (lower.endsWith('.exe') || lower.endsWith('.zip') || lower.endsWith('.msix') || lower.endsWith('.dmg') || lower.endsWith('.pkg')) return true;
 
   // Patching scripts and repository documentation not needed by the extension runtime
-  if (lower === 'desktop-injector.js' || lower === 'asar-patcher.js') return true;
+  if (lower === 'desktop-injector.js') return true;
   if (['readme.md', 'privacy.md', 'license.md', 'security.md', 'contributing.md'].includes(lower)) return true;
 
   // Backups and temporary files

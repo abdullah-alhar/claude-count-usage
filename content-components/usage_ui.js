@@ -446,7 +446,7 @@ class UsageUI {
 		const prefs = this.state.sidebarDisplay;
 
 		this.usageSection.hiddenKeys = new Set(
-			Object.keys(prefs).filter(key => key !== 'desktopLink' && !isSidebarItemVisible(prefs, key))
+			Object.keys(prefs).filter(key => !isSidebarItemVisible(prefs, key))
 		);
 
 		// No desktop/promotional footer in this build.
@@ -481,8 +481,6 @@ class UsageUI {
 
 		if (persist) browser.storage.local.set({ usageSectionCollapsed: collapsed });
 	}
-
-// createDesktopFooter, createQoLFooter, createDonateFooter removed — personal build has no promotional footers
 
 	createChatElements() {
 		// Stat line container
@@ -811,16 +809,6 @@ class UsageUI {
 			this.wasPeakHours = peak;
 			this.renderChatArea();
 			this.renderSidebar();
-		}
-	}
-
-	checkQoLInstalled() {
-		const hasQoL = document.documentElement.hasAttribute('data-claude-qol-installed');
-		if (hasQoL) {
-			const qolFooter = this.elements.sidebar?.container?.querySelector('.ut-qol-footer');
-			if (qolFooter) {
-				qolFooter.remove();
-			}
 		}
 	}
 
