@@ -191,17 +191,70 @@ class SettingsCard {
 		const container = document.createElement('div');
 		container.className = 'ut-settings-section';
 
+		const headerRow = document.createElement('div');
+		headerRow.className = 'ut-row ut-justify-between ut-mb-1';
+
 		const label = document.createElement('label');
 		label.className = 'ut-settings-label text-text-300 text-xs';
+		label.style.marginBottom = '0';
 		label.textContent = localize('settings.display_label') || 'Visible Bars';
 
-		container.appendChild(label);
+		const refreshBtn = document.createElement('button');
+		refreshBtn.className = 'ut-button ut-settings-refresh-btn text-xs text-text-300';
+		refreshBtn.textContent = localize('settings.refresh') || 'Refresh';
+		refreshBtn.addEventListener('click', () => this.refreshUsage());
+
+		headerRow.appendChild(label);
+		headerRow.appendChild(refreshBtn);
+		container.appendChild(headerRow);
+
+		const refreshStatus = document.createElement('div');
+		refreshStatus.className = 'ut-settings-refresh-status text-xs ut-mb-1';
+		refreshStatus.style.display = 'none';
+		container.appendChild(refreshStatus);
 
 		const checkboxList = document.createElement('div');
 		checkboxList.className = 'ut-settings-checkbox-list';
 		container.appendChild(checkboxList);
 
-		return { container, checkboxList };
+		return { container, checkboxList, refreshBtn, refreshStatus };
+	}
+
+	async refreshUsage() {
+		const btn = this.elements?.refreshBtn;
+		const status = this.elements?.refreshStatus;
+		if (!btn || btn.disabled) return;
+
+		btn.disabled = true;
+		status.style.display = 'block';
+		status.style.color = BLUE_HIGHLIGHT;
+		status.textContent = localize('settings.refreshing') || 'Refreshing…';
+
+		try {
+			const res = await sendBackgroundMessage({ type: 'refreshUsageData' });
+			if (res && res.success) {
+				status.style.color = SUCCESS_GREEN;
+				status.textContent = localize('settings.refresh_success') || '✓ Updated';
+				await this.rebuildDisplayToggles();
+			} else {
+				status.style.color = RED_WARNING;
+				status.textContent = res?.errorDetails ? `✗ ${res.errorDetails}` : (localize('settings.refresh_error') || '✗ Refresh failed');
+			}
+		} catch (err) {
+			status.style.color = RED_WARNING;
+			status.textContent = localize('settings.refresh_error') || '✗ Refresh failed';
+			await Log('warn', 'Settings: Manual usage refresh failed:', err);
+		} finally {
+			// Cooldown to prevent spam-clicking
+			setTimeout(() => {
+				if (btn) btn.disabled = false;
+				setTimeout(() => {
+					if (status && status.textContent === (localize('settings.refresh_success') || '✓ Updated')) {
+						status.style.display = 'none';
+					}
+				}, 1500);
+			}, 2000);
+		}
 	}
 
 	async loadCurrentState() {
@@ -231,7 +284,7 @@ class SettingsCard {
 
 		// Get the available limit keys from the usage UI
 		// The usageUI instance exposes availableLimitKeys()
-		const limitKeys = typeof usageUI !== 'undefined' ? usageUI.availableLimitKeys() : ['extraUsage'];
+		const limitKeys = typeof usageUI !== 'undefined' ? usageUI.availableLimitKeys() : ['session', 'weekly', 'extraUsage'];
 		const prefs = await getSidebarDisplayPrefs();
 
 		const labelKeys = {

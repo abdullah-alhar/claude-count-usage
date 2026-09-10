@@ -468,6 +468,30 @@
     background: var(--bg-300, #333);
 }
 
+.ut-settings-refresh-btn {
+    background: none;
+    border: 1px solid var(--border-400, #3a3a3a);
+    padding: 2px 8px;
+    border-radius: 6px;
+    font-size: 11px;
+    cursor: pointer;
+    line-height: 1.4;
+}
+
+.ut-settings-refresh-btn:hover {
+    background: var(--bg-300, #333);
+}
+
+.ut-settings-refresh-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.ut-settings-refresh-status {
+    font-size: 11px;
+    line-height: 1.3;
+}
+
 .ut-settings-checkbox-list {
     display: flex;
     flex-direction: column;

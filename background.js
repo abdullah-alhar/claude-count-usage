@@ -44,6 +44,11 @@ let processingLock = null;  // Unix timestamp or null
 const pendingLocaleReloads = new Map();  // tabId -> normalized new locale (set in onBeforeRequest, consumed in onCompleted)
 const pendingTasks = [];
 const LOCK_TIMEOUT = 30000;  // 30 seconds - if a task takes longer, something's wrong
+// How long to suppress the automatic post-stream /usage refetch after a successful fetch.
+// Prevents rapid back-to-back messages from hammering the endpoint. Completely independent
+// of the manual Refresh button's 2-second UI cooldown in settings_card.js.
+const POST_STREAM_COOLDOWN_MS = 10_000;  // 10 seconds
+let lastUsageFetchMs = 0;  // epoch ms of last successful /usage fetch (shared across all codepaths)
 let pendingRequests;
 let scheduledNotifications;
 let electronPollingInterval = null;
@@ -405,15 +410,24 @@ async function openDebugPage() {
 }
 messageRegistry.register(openDebugPage);
 
+// Unified usage fetch path — queries api.getUsageData(), updates notifications and all tabs.
+// Records lastUsageFetchMs on every successful fetch so callers can throttle auto-refetches.
+async function refreshUsage(api, orgId) {
+	const usageData = await api.getUsageData();
+	// Record the timestamp regardless of whether the response was an error — a 500 still consumed
+	// the request, and we don't want the next message to immediately retry a broken endpoint.
+	lastUsageFetchMs = Date.now();
+	await scheduleResetNotifications(orgId, usageData);
+	await updateAllTabsWithUsage(usageData);
+	return usageData;
+}
+
 // Complex handlers
 async function requestData(message, sender, orgId) {
 	const { conversationId } = message;
 
 	const api = getStrategy().apiForTab(sender.tab, orgId);
-
-	const usageData = await api.getUsageData();
-	await scheduleResetNotifications(orgId, usageData);
-	await updateAllTabsWithUsage(usageData);
+	const usageData = await refreshUsage(api, orgId);
 
 	if (conversationId) {
 		const cached = await conversationCache.get(conversationId);
@@ -451,10 +465,53 @@ async function requestData(message, sender, orgId) {
 }
 messageRegistry.register(requestData);
 
+// Manual usage refresh triggered from the settings card
+async function refreshUsageData(message, sender, orgId) {
+	if (!orgId || !sender?.tab) return { success: false, error: 'No active tab or org' };
+	const api = getStrategy().apiForTab(sender.tab, orgId);
+	try {
+		const usageData = await refreshUsage(api, orgId);
+		const isError = (typeof usageData.isLoadError === 'function' && usageData.isLoadError()) ||
+			usageData.loadError === true || usageData.fetchSuccess === false;
+		return {
+			success: !isError,
+			isLoadError: isError,
+			errorDetails: usageData.errorDetails
+		};
+	} catch (error) {
+		await Log("warn", "Manual usage refresh failed:", error);
+		return {
+			success: false,
+			isLoadError: true,
+			errorDetails: error.message || String(error)
+		};
+	}
+}
+messageRegistry.register('refreshUsageData', refreshUsageData);
+
 async function reportStreamCompletion(message, sender, orgId) {
 	if (!orgId || !sender?.tab) return false;
 
-	await storeSseUsage(getStrategy().apiForTab(sender.tab, orgId), message.sseLimits);
+	const api = getStrategy().apiForTab(sender.tab, orgId);
+	await storeSseUsage(api, message.sseLimits);
+
+	// Trigger a fresh /usage fetch after a completed message so newly reported limits (e.g. the
+	// 5h session bar appearing on a fresh/reset session) are picked up. Skip when a fetch was
+	// made very recently — rapid back-to-back messages must not spam the endpoint. This cooldown
+	// is independent of the manual Refresh button's own 2-second UI cooldown in settings_card.js.
+	const msSinceLastFetch = Date.now() - lastUsageFetchMs;
+	if (msSinceLastFetch >= POST_STREAM_COOLDOWN_MS) {
+		pendingTasks.push(async () => {
+			try {
+				await refreshUsage(api, orgId);
+			} catch (error) {
+				await Log("warn", "Post-stream usage refresh failed:", error);
+			}
+		});
+		processNextTask();
+	} else {
+		await Log(`Post-stream refetch skipped — last fetch was ${msSinceLastFetch}ms ago (cooldown: ${POST_STREAM_COOLDOWN_MS}ms)`);
+	}
 
 	const conversationId = message.conversationId;
 	if (!conversationId || message.assistantTokens === null) return false;

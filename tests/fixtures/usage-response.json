@@ -1,0 +1,31 @@
+{
+  "_fixture_notes": {
+    "captured": "2026-09-10",
+    "endpoint": "GET https://claude.ai/api/organizations/<org_id>/usage",
+    "account": "claude_pro (5h session + 7-day weekly limits active)",
+    "how": "Captured by intercepting the XHR response in the extension's background.js onBeforeRequest/onCompleted hooks immediately after sending one message on a fresh session. The session limit appeared (38%) where it had been null before the message, confirming the post-stream refetch works.",
+    "usage_in_tests": "Tests in settings-and-coldstart.test.js use UsageData.fromAPIResponse() on this payload to build realistic UsageData instances. Shapes that differ from this fixture (e.g. free-tier nulls, scoped weekly limits) are constructed inline and annotated accordingly."
+  },
+  "limits": [
+    {
+      "kind": "session",
+      "percent": 38,
+      "resets_at": "2026-09-10T15:30:00.000Z"
+    },
+    {
+      "kind": "weekly_all",
+      "percent": 12,
+      "resets_at": "2026-09-14T00:00:00.000Z"
+    }
+  ],
+  "spend": {
+    "enabled": false,
+    "used": { "amount_minor": 0 },
+    "limit": { "amount_minor": 0 }
+  },
+  "extra_usage": {
+    "is_enabled": false,
+    "monthly_limit": 0,
+    "used_credits": 0
+  }
+}

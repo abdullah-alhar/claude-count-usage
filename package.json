@@ -4,7 +4,7 @@
   "description": "Track your Claude.ai session and weekly usage in desktop and browser.",
   "private": true,
   "scripts": {
-    "test": "node tests/usage-notice.test.js",
+    "test": "node tests/usage-notice.test.js && node tests/settings-and-coldstart.test.js",
     "build": "node scripts/build-dataclasses.js"
   },
   "author": "Abdullah Alhar",

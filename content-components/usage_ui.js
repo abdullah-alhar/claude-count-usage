@@ -462,10 +462,15 @@ class UsageUI {
 	// moment extra usage is enabled and someone who never wants to see it should be able to say
 	// so in advance. Off means never; on means show it if and when it becomes relevant.
 	availableLimitKeys() {
+		const keys = new Set(['session', 'weekly']);
 		const usageData = this.state.usageData;
-		const keys = usageData ? usageData.getActiveLimits().map(limit => limit.key) : [];
-		keys.push('extraUsage');
-		return keys;
+		if (usageData) {
+			for (const limit of usageData.getActiveLimits()) {
+				keys.add(limit.key);
+			}
+		}
+		keys.add('extraUsage');
+		return Array.from(keys);
 	}
 
 	setCollapsed(collapsed, persist = true) {

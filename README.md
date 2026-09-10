@@ -1,10 +1,22 @@
 # Claude Count Usage
 
+
 **Claude Count Usage** is a minimal, open-source **Claude usage tracker** — a browser extension and desktop patch for Claude.ai that surfaces the two stats people actually want to see: how much of your session and weekly usage you've used, and what the current reply cost. No promos, no donate buttons, no bloat.
 
 Created by [Abdullah Alhar](https://github.com/abdullah-alhar).
 
 ![Claude Count Usage demo](assets/demo.gif)
+
+---
+
+## Contents
+
+- [What it does](#what-it-does)
+- [Installation](#installation)
+- [Features](#features)
+- [How it works](#how-it-works)
+- [Privacy](#privacy)
+- [License](#license)
 
 ---
 
@@ -48,14 +60,20 @@ To remove it, double-click **Uninstall.app** or run **`uninstall.command`**. Thi
 
 1. Install [Node.js](https://nodejs.org).
 2. Download this repo, or grab the [Windows Installer](https://github.com/abdullah-alhar/claude-count-usage/releases/download/New/Windows.installer.zip) and unzip it.
-3. Run **`install.exe`**.
+3. Run **`install.bat`**.
    - If Claude Desktop isn't found, it's installed automatically.
    - Works standalone and fetches the rest from GitHub if run alone.
 4. Claude Desktop restarts with usage tracking active.
 
-To remove it, run **`uninstall.exe`** — this fully uninstalls Claude Desktop rather than trying to patch it back; grab a fresh copy from [claude.ai/download](https://claude.ai/download) afterward if you want to keep using it.
+To remove it, run **`uninstall.bat`** — this fully uninstalls Claude Desktop rather than trying to patch it back; grab a fresh copy from [claude.ai/download](https://claude.ai/download) afterward if you want to keep using it.
 
+*(Optional)* Run **`create-shortcuts.bat`** once afterward to generate desktop shortcuts with proper custom icons instead of the default script icon.
 
+### Chrome
+
+Load the extension via `chrome://extensions` → **Load unpacked** → select the repo folder. (Chrome Web Store listing coming later.)
+
+---
 
 ## Features
 
