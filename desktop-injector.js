@@ -554,6 +554,23 @@ function readFileFromAsar(asarPath, dataOffset, node) {
   return buf;
 }
 
+function tryLoadAsar(asarPath) {
+  try {
+    if (!fs.existsSync(asarPath)) return null;
+    const { header, dataOffset, jsonLen, payloadSize } = readAsarHeader(asarPath);
+    const pkgNode = getNode(header, 'package.json');
+    if (!pkgNode) return null;
+    const pkgBuf = readFileFromAsar(asarPath, dataOffset, pkgNode);
+    if (!pkgBuf) return null;
+    const pkg = JSON.parse(pkgBuf.toString('utf8'));
+    if (!pkg || typeof pkg !== 'object' || !pkg.name) return null;
+    return { header, dataOffset, jsonLen, payloadSize, pkgNode, pkgBuf, pkg };
+  } catch {
+    return null;
+  }
+}
+
+
 // ─── Wrapper Source ─────────────────────────────────────────
 
 function generateWrapperSource(relativeMainPath) {
@@ -794,14 +811,36 @@ async function patchAsar(asarPath, extensionDir) {
       }
     }
   } catch {}
-  const { header, dataOffset } = readAsarHeader(asarPath);
+  // 1. Load and validate package.json, with automatic recovery from healthy backups if corrupted
+  let asarInfo = tryLoadAsar(asarPath);
+  if (!asarInfo) {
+    const candidateBackups = [
+      asarPath + '.original',
+      asarPath + '.bak',
+      asarPath + '.backup'
+    ];
+    let recovered = false;
+    for (const backupFile of candidateBackups) {
+      if (fs.existsSync(backupFile)) {
+        const backupInfo = tryLoadAsar(backupFile);
+        if (backupInfo) {
+          console.log(`Notice: Existing ${path.basename(asarPath)} was corrupted. Automatically restored from healthy backup (${path.basename(backupFile)})...`);
+          fs.copyFileSync(backupFile, asarPath);
+          asarInfo = backupInfo;
+          recovered = true;
+          break;
+        }
+      }
+    }
+    if (!asarInfo) {
+      throw new Error(
+        `The Claude Desktop archive (${asarPath}) is corrupted and contains invalid JSON.\n` +
+        `Please reinstall Claude Desktop from https://claude.ai/download to restore a clean copy, then run this installer again.`
+      );
+    }
+  }
 
-  // 1. Locate package.json
-  const pkgNode = getNode(header, 'package.json');
-  if (!pkgNode) throw new Error('No package.json found inside app.asar');
-
-  const pkgBuf = readFileFromAsar(asarPath, dataOffset, pkgNode);
-  const pkg = JSON.parse(pkgBuf.toString('utf8'));
+  const { header, dataOffset, pkg } = asarInfo;
 
   // Determine current and original main
   const currentMain = pkg.main || 'index.js';
@@ -965,8 +1004,14 @@ async function patchAsar(asarPath, extensionDir) {
   // Backup original asar once
   const backupAsar = asarPath + '.bak';
   if (!fs.existsSync(backupAsar)) {
-    console.log('Creating safety backup:', backupAsar);
-    fs.copyFileSync(asarPath, backupAsar);
+    const origCandidate = asarPath + '.original';
+    if (fs.existsSync(origCandidate) && tryLoadAsar(origCandidate)) {
+      console.log('Creating safety backup from clean original:', backupAsar);
+      fs.copyFileSync(origCandidate, backupAsar);
+    } else {
+      console.log('Creating safety backup:', backupAsar);
+      fs.copyFileSync(asarPath, backupAsar);
+    }
   }
 
   // Replace asar safely
@@ -1106,11 +1151,33 @@ function installExtensionFolder(resourcesDir, extensionDir) {
 }
 
 function unpatchAsar(asarPath) {
-  const backupAsar = asarPath + '.bak';
-  if (!fs.existsSync(backupAsar)) {
-    throw new Error(`No backup file found at ${backupAsar}`);
+  const candidateBackups = [
+    asarPath + '.original',
+    asarPath + '.bak',
+    asarPath + '.backup'
+  ];
+  let backupToRestore = null;
+  for (const candidate of candidateBackups) {
+    if (fs.existsSync(candidate)) {
+      const info = tryLoadAsar(candidate);
+      if (info) {
+        backupToRestore = candidate;
+        const mainNode = getNode(info.header, info.pkg.main || 'index.js');
+        let isPatched = false;
+        if (mainNode) {
+          const mainContent = readFileFromAsar(candidate, info.dataOffset, mainNode);
+          if (mainContent && mainContent.toString('utf8').includes(MARKER)) {
+            isPatched = true;
+          }
+        }
+        if (!isPatched) break;
+      }
+    }
   }
-  fs.copyFileSync(backupAsar, asarPath);
+  if (!backupToRestore) {
+    throw new Error(`No valid backup file found for ${asarPath} (.original or .bak).`);
+  }
+  fs.copyFileSync(backupToRestore, asarPath);
   const resourcesDir = path.dirname(asarPath);
   const extDir = path.join(resourcesDir, 'injected-extension');
   if (fs.existsSync(extDir)) fs.rmSync(extDir, { recursive: true, force: true });
@@ -1370,6 +1437,61 @@ function signMac(appPath) {
   } catch {}
 }
 
+// ─── macOS Auto-Update Prevention & Stale LaunchAgent Cleanup ──
+
+function disableMacAutoUpdates(appPath) {
+  if (os.platform() !== 'darwin') return;
+
+  // 1. Remove ShipIt from Squirrel.framework to prevent automatic self-updates from overwriting Claude.app on reboot
+  const possibleShipItPaths = [
+    path.join(appPath, 'Contents', 'Frameworks', 'Squirrel.framework', 'Resources', 'ShipIt'),
+    path.join(appPath, 'Contents', 'Frameworks', 'Squirrel.framework', 'Versions', 'A', 'Resources', 'ShipIt'),
+    path.join(appPath, 'Contents', 'Frameworks', 'Squirrel.framework', 'Versions', 'Current', 'Resources', 'ShipIt')
+  ];
+  for (const shipIt of possibleShipItPaths) {
+    try {
+      if (fs.existsSync(shipIt)) {
+        fs.rmSync(shipIt, { force: true });
+        console.log(`Removed ${path.basename(shipIt)} to protect Claude Desktop patch from self-updates.`);
+      }
+    } catch {}
+  }
+
+  // 2. Clear staged ShipIt update caches that could trigger an overwrite on reboot
+  const home = os.homedir();
+  const shipItCacheDir = path.join(home, 'Library', 'Caches', 'com.anthropic.claudefordesktop.ShipIt');
+  try {
+    if (fs.existsSync(shipItCacheDir)) {
+      for (const item of fs.readdirSync(shipItCacheDir)) {
+        try { fs.rmSync(path.join(shipItCacheDir, item), { recursive: true, force: true }); } catch {}
+      }
+    }
+  } catch {}
+
+  // 3. Remove obsolete LaunchAgents that previously ran legacy patch engines on reboot
+  const launchAgentsDir = path.join(home, 'Library', 'LaunchAgents');
+  const obsoletePlists = [
+    'com.abdullah.claude-count-usage.plist',
+    'com.local.claude-desktop-injector.watcher.plist'
+  ];
+  for (const plistName of obsoletePlists) {
+    const plistFile = path.join(launchAgentsDir, plistName);
+    if (fs.existsSync(plistFile)) {
+      try { execFileSync('launchctl', ['unload', plistFile], { stdio: 'ignore' }); } catch {}
+      try { fs.rmSync(plistFile, { force: true }); } catch {}
+      console.log(`Cleaned up obsolete launch agent: ${plistName}`);
+    }
+  }
+
+  // Also clean old Application Support folder if present
+  const oldAppSupport = path.join(home, 'Library', 'Application Support', 'ClaudeCountUsage');
+  try {
+    if (fs.existsSync(oldAppSupport)) {
+      fs.rmSync(oldAppSupport, { recursive: true, force: true });
+    }
+  } catch {}
+}
+
 // ─── Windows Start Menu & Desktop Shortcut Creation ────────
 
 function setupWindowsShortcuts(appPath) {
@@ -1465,6 +1587,7 @@ async function cmdInstall(extensionDir) {
   await patchAsar(install.asarPath, extensionDir);
 
   if (install.platform === 'darwin') {
+    disableMacAutoUpdates(install.appPath);
     updateInfoPlistHash(install.appPath, install.asarPath);
     signMac(install.appPath);
   }
@@ -1489,6 +1612,7 @@ async function cmdPatch(extensionDir) {
   }
   await patchAsar(install.asarPath, extensionDir);
   if (install.platform === 'darwin') {
+    disableMacAutoUpdates(install.appPath);
     updateInfoPlistHash(install.appPath, install.asarPath);
     signMac(install.appPath);
   }
@@ -1508,6 +1632,7 @@ function cmdUnpatch() {
   if (!install) throw new Error('Claude Desktop not found.');
   unpatchAsar(install.asarPath);
   if (install.platform === 'darwin') {
+    disableMacAutoUpdates(install.appPath);
     updateInfoPlistHash(install.appPath, install.asarPath);
     signMac(install.appPath);
   }
@@ -1516,14 +1641,13 @@ function cmdUnpatch() {
 
 function isAsarPatched(asarPath) {
   try {
-    const { header, dataOffset } = readAsarHeader(asarPath);
-    const pkgNode = getNode(header, 'package.json');
-    if (!pkgNode) return false;
-    const pkg = JSON.parse(readFileFromAsar(asarPath, dataOffset, pkgNode).toString('utf8'));
+    const info = tryLoadAsar(asarPath);
+    if (!info) return false;
+    const { header, dataOffset, pkg } = info;
     const mainNode = getNode(header, pkg.main || 'index.js');
     if (!mainNode) return false;
-    const mainContent = readFileFromAsar(asarPath, dataOffset, mainNode).toString('utf8');
-    return mainContent.includes(MARKER);
+    const mainContent = readFileFromAsar(asarPath, dataOffset, mainNode);
+    return mainContent ? mainContent.toString('utf8').includes(MARKER) : false;
   } catch {
     return false;
   }
