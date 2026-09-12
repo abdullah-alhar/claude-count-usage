@@ -5,7 +5,7 @@ import { tokenStorageManager, tokenCounter } from './bg-components/tokenManageme
 import { getStrategy, initContainerStrategy, setBrave } from './bg-components/container-strategy.js';
 import { UsageData, modelFamilyFromVersion, defaultModelForTier, defaultModelVersionForTier } from './shared/dataclasses.js';
 import { translate, normalizeLocale } from './shared/localization.js';
-import { scheduleAlarm, getAlarm, createNotification } from './bg-components/electron-compat.js';
+import { scheduleAlarm, getAlarm, clearAlarm, createNotification } from './bg-components/electron-compat.js';
 import { invalidateAccountSettings, invalidateProfileTokens, storeSseUsage } from './bg-components/claude-api.js';
 
 const INTERCEPT_PATTERNS = {
@@ -113,6 +113,28 @@ if (!isElectron) {
 
 async function handleAlarm(alarmName) {
 	await Log("Alarm triggered:", alarmName);
+
+	if (alarmName.startsWith('resetRefresh:')) {
+		const parts = alarmName.split(':');
+		const orgId = parts[1];
+		try {
+			await clearAlarm(alarmName).catch(() => {});
+			const tabs = await browser.tabs.query({ url: "*://claude.ai/*" });
+			if (tabs.length > 0) {
+				const tab = tabs[0];
+				const activeOrgId = orgId || (await requestActiveOrgId(tab));
+				const api = getStrategy().apiForTab(tab, activeOrgId);
+				await refreshUsage(api, activeOrgId);
+				await checkResetNotifications();
+				await Log("Reset refresh completed for org:", activeOrgId);
+			} else {
+				await Log("Reset refresh alarm fired but no claude.ai tab open");
+			}
+		} catch (error) {
+			await Log("warn", "Reset refresh failed:", error);
+		}
+		return;
+	}
 
 	if (alarmName === 'checkResetNotifications') {
 		if (!isElectron) {
@@ -799,9 +821,13 @@ async function logUsageDelta(orgId, previousUsage, currentUsage, conversationLen
 	}
 }
 
+const RESET_REFRESH_BUFFER_MS = 3000;
+
 async function scheduleResetNotifications(orgId, usageData) {
+	if (!usageData || !orgId) return;
+
 	const threshold = await getStorageValue('resetNotifThreshold', 100);
-	const maxedLimits = usageData.getMaxedLimits(threshold);
+	const maxedLimits = (typeof usageData.getMaxedLimits === 'function') ? usageData.getMaxedLimits(threshold) : [];
 
 	for (const limit of maxedLimits) {
 		if (limit.resetsAt <= Date.now()) continue;
@@ -814,6 +840,30 @@ async function scheduleResetNotifications(orgId, usageData) {
 		await scheduledNotifications.set(timestampKey, orgId, expiryTime);
 
 		await Log(`Stored pending reset: ${limit.key} for ${new Date(limit.resetsAt).toISOString()}`);
+	}
+
+	// Schedule prompt data refresh at resets_at + buffer for any active limit with a future reset
+	const activeLimits = (typeof usageData.getActiveLimits === 'function') ? usageData.getActiveLimits() : [];
+	const now = Date.now();
+
+	for (const limit of activeLimits) {
+		if (!limit.resetsAt) continue;
+		const resetsAtMs = typeof limit.resetsAt === 'number' ? limit.resetsAt : new Date(limit.resetsAt).getTime();
+		if (isNaN(resetsAtMs) || resetsAtMs <= now) continue;
+
+		const timestampKey = resetsAtMs.toString();
+		const alarmName = `resetRefresh:${orgId}:${limit.key}:${timestampKey}`;
+		const refreshWhen = resetsAtMs + RESET_REFRESH_BUFFER_MS;
+
+		try {
+			const existing = await getAlarm(alarmName);
+			if (!existing) {
+				await scheduleAlarm(alarmName, { when: refreshWhen });
+				await Log(`Scheduled prompt reset refresh alarm "${alarmName}" for ${new Date(refreshWhen).toISOString()}`);
+			}
+		} catch (error) {
+			await Log("warn", `Failed to schedule reset refresh alarm for ${limit.key}:`, error);
+		}
 	}
 }
 

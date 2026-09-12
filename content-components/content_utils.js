@@ -329,12 +329,16 @@ async function applyLocale() {
 function getResetTimeHTML(timeInfo) {
 	const prefix = localize('reset.prefix');
 
-	if (!timeInfo || !timeInfo.timestamp || timeInfo.expired) {
+	if (!timeInfo || !timeInfo.timestamp) {
 		return `${prefix} <span>${localize('reset.not_set')}</span>`;
 	}
 
 	const now = Date.now();
 	const diff = timeInfo.timestamp - now;
+
+	if (diff <= 0 || timeInfo.expired) {
+		return `<span style="color: ${SUCCESS_GREEN}">${localize('common.resetting')}</span>`;
+	}
 
 	// Convert to seconds and round to nearest minute
 	const totalMinutes = Math.round(diff / (1000 * 60));

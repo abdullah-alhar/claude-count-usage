@@ -44,6 +44,9 @@ export async function scheduleAlarm(name, options) {
 	if (!isElectron) {
 		browser.alarms.create(name, options);
 	} else {
+		// Store in persistent storage so getAlarm works
+		await electronAlarms.set(name, options);
+
 		// Electron - pass full options
 		const tabs = await chrome.tabs.query({ url: '*://claude.ai/*' });
 		if (tabs.length > 0) {

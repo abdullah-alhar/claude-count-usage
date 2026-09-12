@@ -544,6 +544,182 @@ console.log('\n=== 6. tracker-styles.css refresh button styles ===');
 		'defines .ut-settings-refresh-status');
 }
 
+// ─── 7. getResetTimeHTML() transitional "Resetting..." state ────────────────
+console.log('\n=== 7. getResetTimeHTML() transitional "Resetting..." state ===');
+{
+	const contentUtilsSrc = fs.readFileSync(path.join(rootDir, 'content-components', 'content_utils.js'), 'utf8');
+	const fnMatch = contentUtilsSrc.match(/function getResetTimeHTML\(timeInfo\)\s*\{([\s\S]*?)\n\}/);
+	assert(!!fnMatch, 'getResetTimeHTML() function found in content_utils.js');
+
+	if (fnMatch) {
+		const locStrings = {
+			'reset.prefix': 'Reset in:',
+			'reset.not_set': 'Not set',
+			'reset.under_1m': '<1m',
+			'common.resetting': 'Resetting...',
+			'time.hm': '{h}h {m}m',
+			'time.m': '{m}m'
+		};
+		const localize = (k, params) => {
+			let s = locStrings[k] || k;
+			if (params) {
+				for (const [p, v] of Object.entries(params)) s = s.replace(`{${p}}`, v);
+			}
+			return s;
+		};
+		const SUCCESS_GREEN = '#00b37e';
+		const BLUE_HIGHLIGHT = '#2c84db';
+
+		// eslint-disable-next-line no-new-func
+		const getResetTimeHTML = new Function(
+			'timeInfo', 'localize', 'SUCCESS_GREEN', 'BLUE_HIGHLIGHT',
+			'"use strict"; ' + fnMatch[1]
+		);
+
+		// Test 7a: null / missing timeInfo -> "Reset in: Not set"
+		const htmlNull = getResetTimeHTML(null, localize, SUCCESS_GREEN, BLUE_HIGHLIGHT);
+		assert(htmlNull.includes('Not set'), 'getResetTimeHTML(null) shows "Not set"');
+
+		// Test 7b: missing timestamp -> "Reset in: Not set"
+		const htmlNoTs = getResetTimeHTML({ timestamp: null, expired: false }, localize, SUCCESS_GREEN, BLUE_HIGHLIGHT);
+		assert(htmlNoTs.includes('Not set'), 'getResetTimeHTML({ timestamp: null }) shows "Not set"');
+
+		// Test 7c: future timestamp -> formatted countdown
+		const futureTs = Date.now() + 15 * 60 * 1000; // 15 mins
+		const htmlFuture = getResetTimeHTML({ timestamp: futureTs, expired: false }, localize, SUCCESS_GREEN, BLUE_HIGHLIGHT);
+		assert(htmlFuture.includes('15m'), 'getResetTimeHTML() formats future minutes correctly');
+
+		// Test 7d: expired=true -> returns "Resetting..." in SUCCESS_GREEN
+		const htmlExpired = getResetTimeHTML({ timestamp: Date.now() - 5000, expired: true }, localize, SUCCESS_GREEN, BLUE_HIGHLIGHT);
+		assert(htmlExpired.includes('Resetting...'), 'getResetTimeHTML({ expired: true }) displays "Resetting..."');
+		assert(htmlExpired.includes(SUCCESS_GREEN), 'getResetTimeHTML({ expired: true }) uses SUCCESS_GREEN');
+		assert(!htmlExpired.includes('Not set'), 'getResetTimeHTML({ expired: true }) does NOT show "Not set"');
+
+		// Test 7e: timestamp in the past (diff <= 0) even if expired flag wasn't set -> returns "Resetting..."
+		const htmlPast = getResetTimeHTML({ timestamp: Date.now() - 2000, expired: false }, localize, SUCCESS_GREEN, BLUE_HIGHLIGHT);
+		assert(htmlPast.includes('Resetting...'), 'getResetTimeHTML(past timestamp) displays "Resetting..."');
+		assert(htmlPast.includes(SUCCESS_GREEN), 'getResetTimeHTML(past timestamp) uses SUCCESS_GREEN');
+	}
+}
+
+// ─── 8. scheduleResetNotifications() prompt alarm scheduling & deduplication ─
+console.log('\n=== 8. scheduleResetNotifications() prompt alarm scheduling & deduplication ===');
+{
+	const bgSrc = fs.readFileSync(path.join(rootDir, 'background.js'), 'utf8');
+
+	// 8a: Verify RESET_REFRESH_BUFFER_MS is declared and positive
+	const bufferMatch = bgSrc.match(/const RESET_REFRESH_BUFFER_MS\s*=\s*(\d+);/);
+	assert(!!bufferMatch, 'RESET_REFRESH_BUFFER_MS constant declared in background.js');
+	const bufferMs = bufferMatch ? parseInt(bufferMatch[1], 10) : 0;
+	assert(bufferMs >= 1000 && bufferMs <= 10000, 'RESET_REFRESH_BUFFER_MS is between 1s and 10s (buffer: ' + bufferMs + 'ms)');
+
+	// 8b: Test scheduleResetNotifications logic with mock alarms
+	const fnMatch = bgSrc.match(/async function scheduleResetNotifications\(orgId, usageData\)\s*\{([\s\S]*?)\n\}/);
+	assert(!!fnMatch, 'scheduleResetNotifications() found in background.js');
+
+	if (fnMatch) {
+		const scheduledAlarms = new Map();
+		const scheduledNotificationsMock = new Map();
+		const logs = [];
+
+		const getStorageValue = async (key, def) => def;
+		const scheduledNotifications = {
+			has: async (k) => scheduledNotificationsMock.has(k),
+			set: async (k, v) => { scheduledNotificationsMock.set(k, v); }
+		};
+		const getAlarm = async (name) => scheduledAlarms.get(name) || null;
+		const scheduleAlarm = async (name, opts) => { scheduledAlarms.set(name, opts); };
+		const Log = async (...args) => { logs.push(args.join(' ')); };
+
+		// eslint-disable-next-line no-new-func
+		const scheduleResetNotifications = new Function(
+			'orgId', 'usageData', 'RESET_REFRESH_BUFFER_MS', 'getStorageValue',
+			'scheduledNotifications', 'getAlarm', 'scheduleAlarm', 'Log',
+			'"use strict"; return (async function(){ ' + fnMatch[1] + ' })();'
+		);
+
+		const orgId = 'org-test-123';
+		const targetResetAt = Date.now() + 60000; // 60s in future
+		const usageDataMock = {
+			getMaxedLimits: () => [],
+			getActiveLimits: () => [
+				{ key: 'session', percentage: 75, resetsAt: targetResetAt }
+			]
+		};
+
+		// First run: should schedule the alarm
+		await scheduleResetNotifications(orgId, usageDataMock, bufferMs,
+			getStorageValue, scheduledNotifications, getAlarm, scheduleAlarm, Log);
+
+		const expectedAlarmName = `resetRefresh:${orgId}:session:${targetResetAt}`;
+		assert(scheduledAlarms.has(expectedAlarmName),
+			'scheduleResetNotifications() schedules alarm with expected naming scheme');
+		const alarmOpts = scheduledAlarms.get(expectedAlarmName);
+		assert(alarmOpts && alarmOpts.when === targetResetAt + bufferMs,
+			'Alarm is scheduled for resetsAt + bufferMs (' + (targetResetAt + bufferMs) + ')');
+
+		// Second run with same limit & timestamp: should deduplicate (not overwrite or error)
+		let scheduleAlarmCallCount = 0;
+		const trackingScheduleAlarm = async (name, opts) => {
+			scheduleAlarmCallCount++;
+			scheduledAlarms.set(name, opts);
+		};
+		await scheduleResetNotifications(orgId, usageDataMock, bufferMs,
+			getStorageValue, scheduledNotifications, getAlarm, trackingScheduleAlarm, Log);
+
+		assert(scheduleAlarmCallCount === 0,
+			'scheduleResetNotifications() deduplicates and does not re-schedule existing alarm');
+	}
+
+	// 8c: Test handleAlarm() with resetRefresh alarm
+	const handleAlarmMatch = bgSrc.match(/async function handleAlarm\(alarmName\)\s*\{([\s\S]*?)\n\}/);
+	assert(!!handleAlarmMatch, 'handleAlarm() function found in background.js');
+
+	if (handleAlarmMatch) {
+		const calls = [];
+		const clearAlarm = async (name) => { calls.push(`clearAlarm:${name}`); };
+		const browser = {
+			tabs: {
+				query: async () => [{ id: 42 }]
+			}
+		};
+		const requestActiveOrgId = async (tab) => 'org-from-tab';
+		const getStrategy = () => ({
+			apiForTab: (tab, orgId) => ({ tab, orgId })
+		});
+		const refreshUsage = async (api, orgId) => {
+			calls.push(`refreshUsage:${orgId}`);
+		};
+		const checkResetNotifications = async () => {
+			calls.push('checkResetNotifications');
+		};
+		const updateAllTabsWithUsage = async () => {
+			calls.push('updateAllTabsWithUsage');
+		};
+		const isElectron = false;
+		const Log = async () => {};
+
+		// eslint-disable-next-line no-new-func
+		const handleAlarm = new Function(
+			'alarmName', 'clearAlarm', 'browser', 'requestActiveOrgId',
+			'getStrategy', 'refreshUsage', 'checkResetNotifications',
+			'updateAllTabsWithUsage', 'isElectron', 'Log',
+			'"use strict"; return (async function(){ ' + handleAlarmMatch[1] + ' })();'
+		);
+
+		await handleAlarm('resetRefresh:my-org:session:123456789', clearAlarm, browser,
+			requestActiveOrgId, getStrategy, refreshUsage, checkResetNotifications,
+			updateAllTabsWithUsage, isElectron, Log);
+
+		assert(calls.some(c => c.startsWith('clearAlarm:resetRefresh:my-org')),
+			'handleAlarm() clears one-shot resetRefresh alarm');
+		assert(calls.includes('refreshUsage:my-org'),
+			'handleAlarm() calls refreshUsage with target orgId');
+		assert(calls.includes('checkResetNotifications'),
+			'handleAlarm() triggers checkResetNotifications promptly on reset');
+	}
+}
+
 	// ─── Summary ─────────────────────────────────────────────────────────────────
 	console.log('\n======================================================');
 	if (failedTests === 0) {

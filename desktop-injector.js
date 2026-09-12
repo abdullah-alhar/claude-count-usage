@@ -649,7 +649,11 @@ function setupPolyfills() {
             timerId = setInterval(() => fireAlarm(data.name), data.periodInMinutes * 60 * 1000);
           } else if (data.when) {
             const delay = data.when - Date.now();
-            if (delay > 0) timerId = setTimeout(() => { fireAlarm(data.name); alarms.delete(data.name); }, delay);
+            if (delay <= 0) {
+              fireAlarm(data.name);
+            } else {
+              timerId = setTimeout(() => { fireAlarm(data.name); alarms.delete(data.name); }, delay);
+            }
           } else if (data.delayInMinutes) {
             timerId = setTimeout(() => { fireAlarm(data.name); alarms.delete(data.name); }, data.delayInMinutes * 60 * 1000);
           }
@@ -1569,6 +1573,32 @@ async function cmdInstall(extensionDir) {
     console.log('Detected corrupted or broken app bundle (broken framework symlinks).');
     console.log('Restoring clean official Claude Desktop bundle directly from Anthropic package...');
     install = null;
+  }
+
+  if (install && install.platform === 'win32' && install.protected) {
+    console.log('Detected MSIX installation in WindowsApps (protected by system permissions).');
+    console.log('Setting up editable portable Claude Desktop in AppData...');
+    const portableDir = path.join(os.homedir(), 'AppData', 'Local', 'ClaudeDesktopInjector', 'Claude');
+    let copied = false;
+    try {
+      if (fs.existsSync(portableDir)) fs.rmSync(portableDir, { recursive: true, force: true });
+      fs.mkdirSync(portableDir, { recursive: true });
+      fs.cpSync(install.appPath, portableDir, { recursive: true });
+      if (findAsarUnder(portableDir)) {
+        copied = true;
+        console.log('Copied Claude files to:', portableDir);
+      }
+    } catch {
+      copied = false;
+    }
+
+    if (!copied) {
+      console.log('Fetching official installer directly from Anthropic...');
+      const { filePath } = await downloadClaude();
+      installDownloadedClaude(filePath);
+    }
+    install = locateClaude();
+    if (!install || install.protected) throw new Error('Failed to set up editable Claude Desktop installation');
   }
 
   if (!install) {

@@ -10,7 +10,7 @@
 // a backoff instead of asking once. Both bounds matter: asking once and giving up leaves the bar
 // stuck on "Resetting..." forever if the request fails, and asking every frame turns a window the
 // server hasn't rolled over yet into a request per second.
-const EXPIRY_GRACE_MS = 60 * 1000;			// how far past the reset before we ask at all
+const EXPIRY_GRACE_MS = 10 * 1000;			// how far past the reset before client fallback asks
 const EXPIRY_RETRY_BASE_MS = 30 * 1000;		// first retry delay, doubling per attempt
 const EXPIRY_RETRY_MAX_MS = 5 * 60 * 1000;	// ceiling for that backoff
 
@@ -120,8 +120,9 @@ class UsageSection {
 				progressBar.tooltip.textContent = localize('usage.tooltip_pct_used', { pct: limit.percentage.toFixed(0) });
 			}
 
-			const color = limit.percentage >= CONFIG.WARNING_THRESHOLD * 100 ? RED_WARNING : BLUE_HIGHLIGHT;
-			percentage.textContent = `${limit.percentage.toFixed(0)}%`;
+			const isResetting = limit.resetsAt && limit.resetsAt <= Date.now();
+			const color = isResetting ? SUCCESS_GREEN : (limit.percentage >= CONFIG.WARNING_THRESHOLD * 100 ? RED_WARNING : BLUE_HIGHLIGHT);
+			percentage.textContent = isResetting ? '—' : `${limit.percentage.toFixed(0)}%`;
 			percentage.style.color = color;
 
 			resetTime.innerHTML = this.formatResetTime(limit.resetsAt);
@@ -255,7 +256,12 @@ class UsageSection {
 		for (const limit of usageData.getActiveLimits()) {
 			const barElements = this.limitBars.get(limit.key);
 			if (barElements) {
+				const isResetting = limit.resetsAt && limit.resetsAt <= Date.now();
 				barElements.resetTime.innerHTML = this.formatResetTime(limit.resetsAt);
+				if (isResetting) {
+					barElements.percentage.textContent = '—';
+					barElements.percentage.style.color = SUCCESS_GREEN;
+				}
 			}
 		}
 	}
@@ -675,8 +681,10 @@ class UsageUI {
 		}
 
 		// Normal session display
-		const color = session.percentage >= CONFIG.WARNING_THRESHOLD * 100 ? RED_WARNING : BLUE_HIGHLIGHT;
-		usageDisplay.innerHTML = `${localize('usage.session_inline')} <span class="ut-statline-pct" style="color: ${color}">${session.percentage.toFixed(0)}%</span>`;
+		const isResetting = session.resetsAt && session.resetsAt <= Date.now();
+		const color = isResetting ? SUCCESS_GREEN : (session.percentage >= CONFIG.WARNING_THRESHOLD * 100 ? RED_WARNING : BLUE_HIGHLIGHT);
+		const pctText = isResetting ? localize('common.resetting') : `${session.percentage.toFixed(0)}%`;
+		usageDisplay.innerHTML = `${localize('usage.session_inline')} <span class="ut-statline-pct" style="color: ${color}">${pctText}</span>`;
 		peakIndicator.style.display = isPeakHours() ? '' : 'none';
 
 		// Progress bar (desktop only)
@@ -719,9 +727,15 @@ class UsageUI {
 
 		// Chat area. Skipped with no session limit: this runs every second and would otherwise keep
 		// writing "Reset in: Not set" into the display renderChatArea() hid.
-		if (!usageData.limits.session) return;
+		const session = usageData.limits.session;
+		if (!session) return;
 		const resetInfo = usageData.getSessionResetInfo();
 		this.elements.chat.resetDisplay.innerHTML = getResetTimeHTML(resetInfo);
+
+		if (session.resetsAt && session.resetsAt <= Date.now()) {
+			const { usageDisplay } = this.elements.chat;
+			usageDisplay.innerHTML = `${localize('usage.session_inline')} <span class="ut-statline-pct" style="color: ${SUCCESS_GREEN}">${localize('common.resetting')}</span>`;
+		}
 	}
 
 	// ========== MESSAGE HANDLERS ==========
