@@ -130,11 +130,12 @@ function initSseBridge() {
 		if (event.data.streamOrgId && myOrgId && event.data.streamOrgId !== myOrgId) return;
 
 		const session = parseSseSessionLimit(event.data.messageLimit);
-		if (session) {
-			Log('SSE session usage:', session.percentage + '%');
+		const weekly = parseSseWindow(event.data.messageLimit?.windows?.['7d']);
+		if (session || weekly) {
+			Log('SSE usage:', 'session', session ? session.percentage + '%' : '-', 'weekly', weekly ? weekly.percentage + '%' : '-');
 			for (const listener of ssePartialUsageListeners) {
 				try {
-					listener({ session });
+					listener({ session, weekly });
 				} catch (error) {
 					Log('warn', 'SSE partial usage listener failed:', error);
 				}

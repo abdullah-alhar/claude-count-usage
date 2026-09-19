@@ -1,22 +1,16 @@
 import './lib/browser-polyfill.min.js';
 import './lib/o200k_base.js';
-import { CONFIG, isElectron, RawLog, FORCE_DEBUG, StoredMap, getStorageValue, setStorageValue, removeStorageValue, getOrgStorageKey, sendTabMessage, messageRegistry } from './bg-components/utils.js';
+import { CONFIG, RawLog, FORCE_DEBUG, StoredMap, getStorageValue, setStorageValue, removeStorageValue, getOrgStorageKey, sendTabMessage, messageRegistry } from './bg-components/utils.js';
 import { tokenStorageManager, tokenCounter } from './bg-components/tokenManagement.js';
-import { getStrategy, initContainerStrategy, setBrave } from './bg-components/container-strategy.js';
+import { getStrategy } from './bg-components/container-strategy.js';
 import { UsageData, modelFamilyFromVersion, defaultModelForTier, defaultModelVersionForTier } from './shared/dataclasses.js';
 import { translate, normalizeLocale } from './shared/localization.js';
-import { scheduleAlarm, getAlarm, clearAlarm, createNotification } from './bg-components/electron-compat.js';
+import { scheduleAlarm, getAlarm, clearAlarm, rearmAlarms, createNotification } from './bg-components/electron-compat.js';
+import { checkForUpdates, detectPlatform, isStatusStale, UPDATE_CHECK_INTERVAL_MS, UPDATE_STATUS_KEY, AUTO_UPDATE_CHECK_KEY } from './bg-components/update-check.js';
 import { invalidateAccountSettings, invalidateProfileTokens, storeSseUsage } from './bg-components/claude-api.js';
 
 const INTERCEPT_PATTERNS = {
 	onBeforeRequest: {
-		urls: [
-			"*://claude.ai/api/organizations/*/completion",
-			"*://claude.ai/api/organizations/*/retry_completion",
-			"*://claude.ai/api/settings/billing*",
-			"*://claude.ai/api/account_profile",
-			"*://claude.ai/api/account/settings*"
-		],
 		regexes: [
 			"^https?://claude\\.ai/api/organizations/[^/]*/chat_conversations/[^/]*/completion$",
 			"^https?://claude\\.ai/api/organizations/[^/]*/chat_conversations/[^/]*/retry_completion$",
@@ -26,11 +20,6 @@ const INTERCEPT_PATTERNS = {
 		]
 	},
 	onCompleted: {
-		urls: [
-			"*://claude.ai/api/organizations/*/chat_conversations/*",
-			"*://claude.ai/v1/sessions/*/events",
-			"*://claude.ai/api/account_profile"
-		],
 		regexes: [
 			"^https?://claude\\.ai/api/organizations/[^/]*/chat_conversations/[^/]*$",
 			"^https?://claude\\.ai/v1/sessions/[^/]*/events$",
@@ -44,15 +33,15 @@ let processingLock = null;  // Unix timestamp or null
 const pendingLocaleReloads = new Map();  // tabId -> normalized new locale (set in onBeforeRequest, consumed in onCompleted)
 const pendingTasks = [];
 const LOCK_TIMEOUT = 30000;  // 30 seconds - if a task takes longer, something's wrong
-// How long to suppress the automatic post-stream /usage refetch after a successful fetch.
-// Prevents rapid back-to-back messages from hammering the endpoint. Completely independent
+// Minimum gap between a /usage fetch and the automatic post-stream refetch; a refetch that lands
+// inside it is deferred to its end. Prevents rapid back-to-back messages from hammering the endpoint. Completely independent
 // of the manual Refresh button's 2-second UI cooldown in settings_card.js.
 const POST_STREAM_COOLDOWN_MS = 10_000;  // 10 seconds
 let lastUsageFetchMs = 0;  // epoch ms of last successful /usage fetch (shared across all codepaths)
+let deferredPostStreamRefresh = null;  // timer for a post-stream fetch pushed past the cooldown
 let pendingRequests;
 let scheduledNotifications;
-let electronPollingInterval = null;
-let electronPollInFlight = false;
+let heartbeatInFlight = false;
 
 let isInitialized = false;
 let functionsPendingUntilInitialization = [];
@@ -71,43 +60,6 @@ function runOnceInitialized(fn, args) {
 browser.runtime.onMessage.addListener(async (message, sender) => {
 	return runOnceInitialized(handleMessageFromContent, [message, sender]);
 });
-
-// Context menu: Debug only — no donate/Ko-fi entry
-if (browser.contextMenus) {
-	browser.runtime.onInstalled.addListener(() => {
-		browser.contextMenus.create({
-			id: 'openDebugPage',
-			title: 'Open Debug Page',
-			contexts: ['action']
-		});
-	});
-
-	browser.contextMenus.onClicked.addListener((info, tab) => {
-		if (info.menuItemId === 'openDebugPage') {
-			browser.tabs.create({
-				url: browser.runtime.getURL('debug.html')
-			});
-		}
-	});
-}
-
-
-if (!isElectron) {
-	// WebRequest listeners
-	browser.webRequest.onBeforeRequest.addListener(
-		(details) => runOnceInitialized(onBeforeRequestHandler, [details]),
-		{ urls: INTERCEPT_PATTERNS.onBeforeRequest.urls },
-		["requestBody"]
-	);
-
-	browser.webRequest.onCompleted.addListener(
-		(details) => runOnceInitialized(onCompletedHandler, [details]),
-		{ urls: INTERCEPT_PATTERNS.onCompleted.urls },
-		["responseHeaders"]
-	);
-
-	initContainerStrategy();
-}
 
 //Alarm listeners
 
@@ -137,14 +89,17 @@ async function handleAlarm(alarmName) {
 	}
 
 	if (alarmName === 'checkResetNotifications') {
-		if (!isElectron) {
-			try {
-				await updateAllTabsWithUsage();
-			} catch (error) {
-				await Log("warn", "Usage heartbeat failed:", error);
-			}
-		}
 		await checkResetNotifications();
+		return;
+	}
+
+	if (alarmName === USAGE_HEARTBEAT_ALARM) {
+		await runUsageHeartbeat('alarm');
+		return;
+	}
+
+	if (alarmName === UPDATE_CHECK_ALARM) {
+		await runScheduledUpdateCheck();
 	}
 }
 
@@ -206,17 +161,11 @@ async function checkResetNotifications() {
 		}
 	}
 }
-let alarmListenerRegistered = false;
-if (chrome.alarms) {
-	if (chrome.alarms && !alarmListenerRegistered) {
-		alarmListenerRegistered = true;
-		chrome.alarms.onAlarm.addListener(alarm => handleAlarm(alarm.name));
-	}
-} else {
-	messageRegistry.register('electron-alarm', (msg) => {
-		handleAlarm(msg.name);
-	});
-}
+// Alarms are timers in the desktop app's main process; they fire into the page, and
+// electron_reciever.js relays them here.
+messageRegistry.register('electron-alarm', (msg) => {
+	handleAlarm(msg.name);
+});
 
 
 //#endregion
@@ -280,6 +229,7 @@ async function updateAllTabsWithUsage(usageData = null) {
 				data: {
 					usageData: data.toJSON()
 				}
+			}).catch(error => Log("warn", `Failed to push usage to tab ${tab.id}:`, error));
 		} catch (error) {
 			await Log("warn", `Failed to update tab ${tab.id} with usage data:`, error);
 			const errorUsage = new UsageData({
@@ -382,25 +332,9 @@ messageRegistry.register('getAccountLocale', async (message, sender) => {
 });
 messageRegistry.register('initOrg', (message, sender, orgId) => tokenStorageManager.addOrgId(orgId).then(() => true));
 
-messageRegistry.register('getAPIKey', () => getStorageValue('apiKey'));
-messageRegistry.register('setAPIKey', async (message) => {
-	const newKey = message.newKey;
-	if (newKey === "") {
-		await removeStorageValue('apiKey');
-		return true;
-	}
-
-	const isValid = await tokenCounter.testApiKey(newKey);
-
-	if (isValid) {
-		await setStorageValue('apiKey', newKey);
-		await Log("API key validated and saved");
-		return true;
-	} else {
-		await Log("warn", "API key validation failed");
-		return false;
-	}
-});
+// The Anthropic API key feature was removed; drop a key saved by an older version so it doesn't
+// sit in storage unused.
+removeStorageValue('apiKey').catch(() => {});
 
 messageRegistry.register('getResetNotifEnabled', () => getStorageValue('resetNotifEnabled', false));
 messageRegistry.register('setResetNotifEnabled', (message) => setStorageValue('resetNotifEnabled', message.value));
@@ -415,22 +349,7 @@ messageRegistry.register('setResetNotifThreshold', (message) => {
 messageRegistry.register('getLanguageOverride', () => getStorageValue('languageOverride', null));
 messageRegistry.register('setLanguageOverride', (message) => setStorageValue('languageOverride', message.value));
 
-messageRegistry.register('isElectron', () => isElectron);
-messageRegistry.register('getMonkeypatchPatterns', () => isElectron ? INTERCEPT_PATTERNS : false);
-
-messageRegistry.register('reportBrave', async (message) => {
-	await setBrave(message.isBrave);
-	return true;
-});
-
-async function openDebugPage() {
-	if (!isElectron) {
-		browser.tabs.create({ url: browser.runtime.getURL('debug.html') });
-		return true;
-	}
-	return 'fallback';
-}
-messageRegistry.register(openDebugPage);
+messageRegistry.register('getMonkeypatchPatterns', () => INTERCEPT_PATTERNS);
 
 // Unified usage fetch path — queries api.getUsageData(), updates notifications and all tabs.
 // Records lastUsageFetchMs on every successful fetch so callers can throttle auto-refetches.
@@ -511,18 +430,15 @@ async function refreshUsageData(message, sender, orgId) {
 }
 messageRegistry.register('refreshUsageData', refreshUsageData);
 
-async function reportStreamCompletion(message, sender, orgId) {
-	if (!orgId || !sender?.tab) return false;
-
-	const api = getStrategy().apiForTab(sender.tab, orgId);
-	await storeSseUsage(api, message.sseLimits);
-
-	// Trigger a fresh /usage fetch after a completed message so newly reported limits (e.g. the
-	// 5h session bar appearing on a fresh/reset session) are picked up. Skip when a fetch was
-	// made very recently — rapid back-to-back messages must not spam the endpoint. This cooldown
-	// is independent of the manual Refresh button's own 2-second UI cooldown in settings_card.js.
-	const msSinceLastFetch = Date.now() - lastUsageFetchMs;
-	if (msSinceLastFetch >= POST_STREAM_COOLDOWN_MS) {
+// Trigger a fresh /usage fetch after a completed message so newly reported limits (e.g. the 5h
+// session bar appearing on a fresh/reset session) are picked up. Within the cooldown the fetch is
+// deferred to the end of it rather than dropped: the fetch that started the cooldown is usually
+// the conversation load from just before the message was sent, so it cannot reflect the message.
+// Dropping it left the bars stale until the next heartbeat. This cooldown is independent of the
+// manual Refresh button's own 2-second UI cooldown in settings_card.js.
+async function schedulePostStreamRefresh(api, orgId) {
+	const streamEndedAt = Date.now();
+	const queueRefresh = () => {
 		pendingTasks.push(async () => {
 			try {
 				await refreshUsage(api, orgId);
@@ -531,9 +447,35 @@ async function reportStreamCompletion(message, sender, orgId) {
 			}
 		});
 		processNextTask();
-	} else {
-		await Log(`Post-stream refetch skipped — last fetch was ${msSinceLastFetch}ms ago (cooldown: ${POST_STREAM_COOLDOWN_MS}ms)`);
+	};
+
+	const msSinceLastFetch = streamEndedAt - lastUsageFetchMs;
+	if (msSinceLastFetch >= POST_STREAM_COOLDOWN_MS) {
+		queueRefresh();
+		return 'now';
 	}
+	if (deferredPostStreamRefresh) {
+		await Log("Post-stream refetch already deferred - coalescing");
+		return 'coalesced';
+	}
+	const delay = POST_STREAM_COOLDOWN_MS - msSinceLastFetch;
+	await Log(`Post-stream refetch deferred ${delay}ms - last fetch was ${msSinceLastFetch}ms ago (cooldown: ${POST_STREAM_COOLDOWN_MS}ms)`);
+	deferredPostStreamRefresh = setTimeout(() => {
+		deferredPostStreamRefresh = null;
+		// Anything fetched after the stream ended (heartbeat, another message) already has it.
+		if (lastUsageFetchMs >= streamEndedAt) return;
+		queueRefresh();
+	}, delay);
+	return 'deferred';
+}
+
+async function reportStreamCompletion(message, sender, orgId) {
+	if (!orgId || !sender?.tab) return false;
+
+	const api = getStrategy().apiForTab(sender.tab, orgId);
+	await storeSseUsage(api, message.sseLimits);
+
+	await schedulePostStreamRefresh(api, orgId);
 
 	const conversationId = message.conversationId;
 	if (!conversationId || message.assistantTokens === null) return false;
@@ -603,27 +545,8 @@ function queueAuthoritativePass(options) {
 	processNextTask();
 }
 
-async function getPopupUsageData() {
-	const accounts = await getStrategy().listAccounts();
-	if (accounts.length === 0) return [];
-
-	return Promise.all(accounts.map(async ({ orgId, ctx }) => {
-		const api = getStrategy().apiFor(ctx, orgId);
-		try {
-			const usageData = await api.getUsageData();
-			const org = await api.getOrgInfo();
-			return { orgId, orgName: org?.name || null, usageData: usageData.toJSON() };
-		} catch (e) {
-			const org = await api.getOrgInfo().catch(() => null);
-			return { orgId, orgName: org?.name || null, error: String(e) };
-		}
-	}));
-}
-messageRegistry.register(getPopupUsageData);
-
 async function interceptedRequest(message, sender) {
-	await Log("Got intercepted request, are we in electron?", isElectron);
-	if (!isElectron) return false;
+	await Log("Got intercepted request");
 	message.details.tabId = sender.tab.id;
 	message.details.cookieStoreId = sender.tab.cookieStoreId;
 	onBeforeRequestHandler(message.details);
@@ -632,8 +555,7 @@ async function interceptedRequest(message, sender) {
 messageRegistry.register(interceptedRequest);
 
 async function interceptedResponse(message, sender) {
-	await Log("Got intercepted response, are we in electron?", isElectron);
-	if (!isElectron) return false;
+	await Log("Got intercepted response");
 	message.details.tabId = sender.tab.id;
 	message.details.cookieStoreId = sender.tab.cookieStoreId;
 	onCompletedHandler(message.details);
@@ -653,6 +575,11 @@ messageRegistry.register(getCalibrationData);
 
 // Main handler function
 async function handleMessageFromContent(message, sender) {
+	// Reject messages not sent from this extension's own context; otherwise an untrusted
+	// sender could invoke privileged handlers (storage, notifications, update checks).
+	if (sender.id !== browser.runtime.id) {
+		return;
+	}
 	return messageRegistry.handle(message, sender);
 }
 //#endregion
@@ -1086,18 +1013,110 @@ async function processNextTask() {
 }
 //#endregion
 
-async function electronUsagePoll() {
-	if (electronPollInFlight) return;
-	electronPollInFlight = true;
+//#region Periodic refresh & update checks
+// Idle refresh. Driven by a main-process alarm rather than setInterval here, because the service
+// worker is torn down when idle and its timers die with it; the alarm wakes it back up.
+const USAGE_HEARTBEAT_ALARM = 'usageHeartbeat';
+const USAGE_HEARTBEAT_MINUTES = 2;
+// A heartbeat or focus refresh is skipped if any codepath fetched /usage more recently than this.
+const HEARTBEAT_MIN_GAP_MS = 60_000;
+const UPDATE_CHECK_ALARM = 'updateCheck';
+
+async function runUsageHeartbeat(reason) {
+	if (heartbeatInFlight) return false;
+	const sinceLast = Date.now() - lastUsageFetchMs;
+	if (sinceLast < HEARTBEAT_MIN_GAP_MS) {
+		await Log(`Usage heartbeat (${reason}) skipped - last fetch ${sinceLast}ms ago`);
+		return false;
+	}
+	heartbeatInFlight = true;
 	try {
-		await Log("Electron usage poll - fetching fresh usage data");
-		await updateAllTabsWithUsage();
+		const tabs = await browser.tabs.query({ url: "*://claude.ai/*" });
+		if (tabs.length === 0) return false;
+		const orgId = await requestActiveOrgId(tabs[0]);
+		if (!orgId) return false;
+		await refreshUsage(getStrategy().apiForTab(tabs[0], orgId), orgId);
+		await Log(`Usage heartbeat (${reason}) refreshed org ${orgId}`);
+		return true;
 	} catch (error) {
-		await Log("warn", "Electron usage poll failed:", error);
+		await Log("warn", `Usage heartbeat (${reason}) failed:`, error);
+		return false;
 	} finally {
-		electronPollInFlight = false;
+		heartbeatInFlight = false;
 	}
 }
+
+async function ensurePeriodicAlarms() {
+	const periodic = [
+		['checkResetNotifications', 3],
+		[USAGE_HEARTBEAT_ALARM, USAGE_HEARTBEAT_MINUTES]
+	];
+	if (await getStorageValue(AUTO_UPDATE_CHECK_KEY, true)) {
+		periodic.push([UPDATE_CHECK_ALARM, UPDATE_CHECK_INTERVAL_MS / 60_000]);
+	} else {
+		await clearAlarm(UPDATE_CHECK_ALARM);
+	}
+	for (const [name, periodInMinutes] of periodic) {
+		const existing = await getAlarm(name);
+		if (existing?.periodInMinutes !== periodInMinutes) {
+			await scheduleAlarm(name, { periodInMinutes });
+		}
+	}
+}
+
+async function runUpdateCheck() {
+	return checkForUpdates({
+		fetchImpl: (url, options) => fetch(url, options),
+		currentVersion: browser.runtime.getManifest().version,
+		platform: detectPlatform(navigator.userAgent),
+		now: Date.now(),
+		getStorageValue,
+		setStorageValue
+	});
+}
+
+// The alarm only lives while the desktop app runs, so also check on page load when the last
+// result is older than the interval. Both paths respect the automatic-check toggle.
+async function runScheduledUpdateCheck() {
+	if (!await getStorageValue(AUTO_UPDATE_CHECK_KEY, true)) return null;
+	const status = await getStorageValue(UPDATE_STATUS_KEY, null);
+	if (!isStatusStale(status, Date.now())) return status;
+	const result = await runUpdateCheck();
+	await Log("Update check:", result);
+	return result;
+}
+
+messageRegistry.register('electronPageReady', async () => {
+	await ensurePeriodicAlarms();
+	await rearmAlarms();
+	await runUsageHeartbeat('page-ready');
+	await runScheduledUpdateCheck().catch(error => Log("warn", "Update check failed:", error));
+	return true;
+});
+
+// Returning to the window is when stale numbers are most noticeable.
+messageRegistry.register('electronTabActivated', () => {
+	runUsageHeartbeat('focus');
+	return true;
+});
+
+messageRegistry.register('getUpdateStatus', async () => ({
+	currentVersion: browser.runtime.getManifest().version,
+	autoCheck: await getStorageValue(AUTO_UPDATE_CHECK_KEY, true),
+	status: await getStorageValue(UPDATE_STATUS_KEY, null)
+}));
+
+// Manual check: deliberately ignores the automatic-check toggle and the staleness window.
+messageRegistry.register('checkForUpdatesNow', () => runUpdateCheck());
+
+messageRegistry.register('setAutoUpdateCheck', async (message) => {
+	await setStorageValue(AUTO_UPDATE_CHECK_KEY, !!message.value);
+	await ensurePeriodicAlarms();
+	// Re-enabling after a long time off would otherwise wait a full interval for the first alarm.
+	if (message.value) runScheduledUpdateCheck().catch(error => Log("warn", "Update check failed:", error));
+	return true;
+});
+//#endregion
 
 //#region Variable fill in and initialization
 pendingRequests = new StoredMap("pendingRequests");
@@ -1109,12 +1128,7 @@ const branchSwitchTimers = new Map();
 const authoritativeInFlight = new Set();
 const PENDING_REQUEST_TTL = 10 * 60 * 1000;
 
-getAlarm('checkResetNotifications').then(existing => {
-	if (!existing) {
-		scheduleAlarm('checkResetNotifications', { periodInMinutes: 3 });
-		Log("Created repeating checkResetNotifications alarm");
-	}
-});
+ensurePeriodicAlarms().catch(error => Log("warn", "Failed to arm periodic alarms:", error));
 
 isInitialized = true;
 for (const handler of functionsPendingUntilInitialization) {
@@ -1122,10 +1136,4 @@ for (const handler of functionsPendingUntilInitialization) {
 }
 functionsPendingUntilInitialization = [];
 Log("Done initializing.")
-
-if (isElectron) {
-	const ELECTRON_POLL_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes
-	electronPollingInterval = setInterval(electronUsagePoll, ELECTRON_POLL_INTERVAL_MS);
-	Log("Electron usage polling started with interval:", ELECTRON_POLL_INTERVAL_MS, "ms");
-}
 //#endregion

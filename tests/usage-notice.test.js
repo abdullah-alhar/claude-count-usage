@@ -193,7 +193,10 @@ class MockProgressBar {
 		this.container = new MockElement('div');
 		this.track = new MockElement('div');
 		this.bar = new MockElement('div');
+		this.tooltip = new MockElement('div');
+		this.progress = null;
 	}
+	updateProgress(total, max) { this.progress = (total / max) * 100; }
 }
 
 // ─── Environment Setup for Real UI Execution ────────────────────────────────
@@ -240,6 +243,9 @@ function createUISandbox() {
 		RED_WARNING: '#de2929',
 		BLUE_HIGHLIGHT: '#2c84db',
 		SUCCESS_GREEN: '#22c55e',
+		getSeverityColor: (pct) => (pct >= 90 ? '#de2929' : pct >= 70 ? '#dd6b0a' : '#2c84db'),
+		isPeakHours: () => false,
+		fmtNum: (n) => String(n),
 		SELECTORS: {},
 		LayoutManager: class {},
 		mountToAnchor: () => {},
@@ -343,27 +349,14 @@ function runRealUINoticeTests(UsageData, UsageSection) {
 	const section = new UsageSection();
 	assert(section.notice === null, 'Initial state has no notice');
 
-	// ─── Scenario 1: State A - Genuine Zero Usage on Free Tier ───
-	// Fresh session or reset where Anthropic reports limits: []
+	// ─── Scenario 1: Free tier with nothing reported ───
+	// Anthropic reports limits: [] on the free plan. This used to show a one-line "Reset" notice,
+	// which users read as the tracker being empty/broken once both windows had run out. The free
+	// plan now always draws Session and Weekly rows that say the next message starts them (see
+	// runFreePlanWaitingRowTests), so no notice is shown on top of them.
 	const freeZero = UsageData.fromAPIResponse({ limits: [] }, 'claude_free');
 	section.renderNotice(freeZero);
-
-	assert(section.notice !== null, 'Notice created for free tier with no reported limits');
-	assert(
-		section.notice.className.includes('ut-usage-notice-reset'),
-		'State A uses ut-usage-notice-reset class'
-	);
-	assert(
-		!section.notice.className.includes('ut-usage-notice-error'),
-		'State A does NOT have ut-usage-notice-error class'
-	);
-
-	const resetTextEl = section.notice.querySelector('.ut-usage-reset-text');
-	assert(resetTextEl !== null, 'State A contains .ut-usage-reset-text element');
-	assert(
-		resetTextEl.textContent === 'Reset \u2014 usage will show up here once you send a message.',
-		'State A displays the neutral Reset wording'
-	);
+	assert(section.notice === null, 'No notice for a healthy free tier with no reported limits (rows explain it)');
 
 	// ─── Scenario 2: State B - API Load Error / Network Failure on Free Tier ───
 	const freeError = UsageData.fromAPIResponse({ status: 500 }, 'claude_free');
@@ -423,14 +416,72 @@ function runRealUINoticeTests(UsageData, UsageSection) {
 	assert(section.notice.className.includes('ut-usage-notice-error'), 'Transitioned to error');
 
 	section.renderNotice(freeZero);
-	assert(section.notice.className.includes('ut-usage-notice-reset'), 'Transitioned from error to reset');
-	assert(section.notice.querySelector('.ut-usage-error-title') === null, 'Old error title removed cleanly');
+	assert(section.notice === null, 'Error notice removed once the free tier reports cleanly again');
 
 	section.renderNotice(normalUsage);
 	assert(section.notice === null, 'Notice removed on normal usage');
 
 	section.renderNotice(freeError);
 	assert(section.notice !== null && section.notice.className.includes('ut-usage-notice-error'), 'Re-opened as error');
+}
+
+function runFreePlanWaitingRowTests(UsageData, UsageSection) {
+	console.log('\n=== Free plan: waiting rows instead of an empty box / stuck "Resetting..." ===');
+	const rowText = (section, key) => {
+		const bar = section.limitBars.get(key);
+		return bar ? { pct: bar.percentage.textContent, reset: bar.resetTime.textContent, progress: bar.progressBar.progress } : null;
+	};
+	const WAIT = 'Starts with your next message';
+
+	// Both windows finished / never started
+	const section = new UsageSection();
+	section.render(UsageData.fromAPIResponse({ limits: [] }, 'claude_free'));
+	for (const key of ['session', 'weekly']) {
+		const row = rowText(section, key);
+		assert(!!row, `free, nothing reported: ${key} row is drawn`);
+		assert(row && row.pct === '\u2014' && row.reset === WAIT && row.progress === 0,
+			`free, nothing reported: ${key} row says the next message starts it`);
+	}
+	assert(section.notice === null, 'free, nothing reported: no extra notice');
+
+	// Session still running, weekly finished
+	const future = Date.now() + 3600000;
+	const mixed = UsageData.fromAPIResponse({ limits: [] }, 'claude_free');
+	mixed.limits.session = { percentage: 40, resetsAt: future };
+	section.render(mixed);
+	assert(rowText(section, 'session').pct === '40%', 'free: a running session shows its percentage');
+	assert(rowText(section, 'weekly').reset === WAIT, 'free: a finished weekly shows the waiting row');
+
+	// A window whose reset time has passed never shows "Resetting..." on the free plan
+	const expired = UsageData.fromAPIResponse({ limits: [] }, 'claude_free');
+	expired.limits.session = { percentage: 100, resetsAt: Date.now() - 1000 };
+	expired.limits.weekly = { percentage: 62, resetsAt: future };
+	section.render(expired);
+	assert(rowText(section, 'session').reset === WAIT && rowText(section, 'session').pct === '\u2014',
+		'free: an expired session switches to the waiting row immediately');
+	section.renderResetTimes(expired);
+	assert(rowText(section, 'session').reset === WAIT, 'free: the per-second pass keeps the waiting row (no "Resetting...")');
+	assert(rowText(section, 'weekly').pct === '62%', 'free: the running weekly is untouched');
+
+	// Hidden bars stay hidden
+	const hiddenSection = new UsageSection();
+	hiddenSection.hiddenKeys.add('weekly');
+	hiddenSection.render(UsageData.fromAPIResponse({ limits: [] }, 'claude_free'));
+	assert(!hiddenSection.limitBars.has('weekly') && hiddenSection.limitBars.has('session'),
+		'free: a bar hidden in settings is not brought back as a waiting row');
+
+	// Free load error still shows the error notice, not waiting rows
+	const errSection = new UsageSection();
+	errSection.render(UsageData.fromAPIResponse({ status: 500 }, 'claude_free'));
+	assert(errSection.limitBars.size === 0 && errSection.notice && errSection.notice.className.includes('ut-usage-notice-error'),
+		'free load error: error notice, no waiting rows');
+
+	// Paid plans are unchanged: an expired window still shows the resetting dash, no waiting rows
+	const paidSection = new UsageSection();
+	const paid = UsageData.fromAPIResponse({ limits: [{ kind: 'session', percent: 100, resets_at: new Date(Date.now() - 1000).toISOString() }] }, 'claude_pro');
+	paidSection.render(paid);
+	assert(!paidSection.limitBars.has('weekly'), 'paid: no invented weekly waiting row');
+	assert(rowText(paidSection, 'session') && rowText(paidSection, 'session').reset !== WAIT, 'paid: expired session keeps the normal resetting display');
 }
 
 // ─── Main Execution ──────────────────────────────────────────────────────────
@@ -448,6 +499,7 @@ async function main() {
 
 	// 3. Test real content-components/usage_ui.js (UsageSection)
 	runRealUINoticeTests(UsageData, UsageSection);
+	runFreePlanWaitingRowTests(UsageData, UsageSection);
 
 	console.log(`\n======================================================`);
 	console.log(`  All tests passed successfully! (${passedTests}/${totalTests} assertions)`);

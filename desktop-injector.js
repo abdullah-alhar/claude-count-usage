@@ -1421,8 +1421,98 @@ function updateInfoPlistHash(appPath, asarPath) {
   console.log('Verified ElectronAsarIntegrity in Info.plist matches asar header hash.');
 }
 
+// ── Mac re-signing ──────────────────────────────────────────
+//
+// Patching app.asar and Info.plist breaks Anthropic's signature, so the bundle is re-signed ad-hoc.
+// A plain `codesign --deep --sign -` also throws away every entitlement, and Claude checks for
+// com.apple.security.virtualization before starting Cowork's VM: without it Cowork (local file
+// access, "organize my folder", ...) is silently switched off - Claude's log shows
+// "macOS VM-support probe: entitlement_missing". So each component gets its own entitlements back.
+//
+// Restricted entitlements (keychain groups, app/team identifiers) can only be claimed by
+// Anthropic's certificate; macOS kills an ad-hoc process that claims them (verified: SIGKILL at
+// launch), so those stay dropped - which the old re-sign already did implicitly.
+const RESTRICTED_ENTITLEMENT = (key) =>
+  key === 'keychain-access-groups' ||
+  key === 'application-identifier' ||
+  key === 'com.apple.application-identifier' ||
+  key === 'com.apple.security.application-groups' ||
+  key.startsWith('com.apple.developer.');
+
+// Fallbacks for a bundle that was already stripped by an earlier install (nothing left to read).
+// Taken from the official Claude 2.2553.1 signature, restricted keys removed.
+const DEVICE_ENTITLEMENTS = {
+  'com.apple.security.virtualization': true,
+  'com.apple.security.cs.allow-jit': true,
+  'com.apple.security.automation.apple-events': true,
+  'com.apple.security.device.audio-input': true,
+  'com.apple.security.device.camera': true,
+  'com.apple.security.device.bluetooth': true,
+  'com.apple.security.device.usb': true,
+  'com.apple.security.device.print': true,
+  'com.apple.security.personal-information.location': true,
+  'com.apple.security.personal-information.photos-library': true
+};
+const DEFAULT_ENTITLEMENTS = {
+  '': DEVICE_ENTITLEMENTS, // the main app
+  'Claude Helper.app': DEVICE_ENTITLEMENTS,
+  'Claude Helper (GPU).app': { 'com.apple.security.cs.allow-jit': true },
+  'Claude Helper (Renderer).app': { 'com.apple.security.cs.allow-jit': true },
+  'Claude Helper (Plugin).app': {
+    'com.apple.security.cs.allow-jit': true,
+    'com.apple.security.cs.allow-unsigned-executable-memory': true,
+    'com.apple.security.cs.disable-library-validation': true
+  }
+};
+
+function readEntitlements(codePath) {
+  try {
+    const xml = execFileSync('codesign', ['-d', '--entitlements', '-', '--xml', codePath], { stdio: ['ignore', 'pipe', 'ignore'] });
+    if (!xml || !xml.length) return null;
+    const json = execFileSync('plutil', ['-convert', 'json', '-o', '-', '-'], { input: xml });
+    const parsed = JSON.parse(json.toString('utf8'));
+    return parsed && Object.keys(parsed).length ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function withoutRestricted(entitlements) {
+  const out = {};
+  for (const [key, value] of Object.entries(entitlements || {})) {
+    if (!RESTRICTED_ENTITLEMENT(key)) out[key] = value;
+  }
+  return out;
+}
+
+function signWithEntitlements(codePath, entitlements) {
+  const tmpJson = path.join(os.tmpdir(), `ccu-ent-${process.pid}-${Date.now()}.plist`);
+  try {
+    fs.writeFileSync(tmpJson, JSON.stringify(entitlements));
+    execFileSync('plutil', ['-convert', 'xml1', tmpJson]);
+    execFileSync('codesign', ['--force', '--sign', '-', '--entitlements', tmpJson, codePath], { stdio: 'inherit' });
+  } finally {
+    try { fs.rmSync(tmpJson, { force: true }); } catch {}
+  }
+}
+
 function signMac(appPath) {
   if (os.platform() !== 'darwin') return;
+
+  // Read entitlements BEFORE re-signing: while Anthropic's signature is still on the binaries this
+  // is the exact official list (so new Claude versions carry over automatically).
+  const frameworksDir = path.join(appPath, 'Contents', 'Frameworks');
+  let helperApps = [];
+  try {
+    helperApps = fs.readdirSync(frameworksDir).filter(name => name.endsWith('.app'));
+  } catch {}
+  const plan = [...helperApps.map(name => ({ name, codePath: path.join(frameworksDir, name) })), { name: '', codePath: appPath }]
+    .map(({ name, codePath }) => {
+      const live = readEntitlements(codePath);
+      const source = live ? 'current signature' : (DEFAULT_ENTITLEMENTS[name] ? 'built-in defaults' : 'none');
+      return { name, codePath, source, entitlements: withoutRestricted(live || DEFAULT_ENTITLEMENTS[name] || {}) };
+    });
+
   console.log('Removing quarantine attributes...');
   try {
     execFileSync('xattr', ['-cr', appPath], { stdio: 'ignore' });
@@ -1430,9 +1520,28 @@ function signMac(appPath) {
 
   console.log('Ad-hoc re-signing bundle:', appPath);
   try {
+    // Signs every nested framework/helper; the entitlement-carrying pieces are redone below.
     execFileSync('codesign', ['--force', '--deep', '--sign', '-', appPath], { stdio: 'inherit' });
   } catch (e) {
     console.warn('codesign notice:', e.message);
+  }
+
+  // Helpers first, main app last: the outer signature seals the nested ones.
+  for (const { name, codePath, source, entitlements } of plan) {
+    if (!Object.keys(entitlements).length) continue;
+    try {
+      signWithEntitlements(codePath, entitlements);
+      console.log(`Restored ${Object.keys(entitlements).length} entitlements on ${name || path.basename(appPath)} (from ${source})`);
+    } catch (e) {
+      console.warn(`[Warning] Could not restore entitlements on ${name || path.basename(appPath)}: ${e.message}`);
+    }
+  }
+
+  const finalEntitlements = readEntitlements(appPath) || {};
+  if (finalEntitlements['com.apple.security.virtualization']) {
+    console.log('Verified: virtualization entitlement present (Cowork can start its VM).');
+  } else {
+    console.warn('[Warning] Virtualization entitlement missing after re-signing - Cowork file access will be unavailable.');
   }
 
   // Clear quarantine again after signing to guarantee Gatekeeper allows it
@@ -1565,6 +1674,38 @@ $s2.Save()
 
 // ─── High-Level CLI Actions ─────────────────────────────────
 
+// Chromium keeps an extension's registered service worker, and serves its cached script, across
+// app restarts. After an install that changes background.js, Claude Desktop kept running the old
+// cached background (observed: new content scripts talking to an old background that had no
+// handlers for their messages). Claude is closed by the time this runs, so dropping the whole
+// cache is safe: claude.ai's own worker re-registers on the next launch, and the extension's
+// registers from the freshly installed files. chrome.storage data lives elsewhere and is kept.
+function clearServiceWorkerCache() {
+  const userDataDirs = process.platform === 'darwin'
+    ? [path.join(os.homedir(), 'Library', 'Application Support', 'Claude')]
+    : process.platform === 'win32'
+      ? [path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'Claude')]
+      : [path.join(os.homedir(), '.config', 'Claude')];
+
+  for (const userData of userDataDirs) {
+    if (!fs.existsSync(userData)) continue;
+    const targets = [path.join(userData, 'Service Worker')];
+    const partitions = path.join(userData, 'Partitions');
+    try {
+      for (const name of fs.readdirSync(partitions)) targets.push(path.join(partitions, name, 'Service Worker'));
+    } catch {}
+    for (const dir of targets) {
+      if (!fs.existsSync(dir)) continue;
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
+        console.log('Cleared cached service workers:', dir);
+      } catch (err) {
+        console.warn(`[Warning] Could not clear ${dir}: ${err.message} - if the tracker shows old behaviour, quit Claude and run the installer again.`);
+      }
+    }
+  }
+}
+
 async function cmdInstall(extensionDir) {
   closeRunningClaude();
   let install = locateClaude();
@@ -1615,6 +1756,7 @@ async function cmdInstall(extensionDir) {
 
   console.log(`Patching ${install.asarPath} ...`);
   await patchAsar(install.asarPath, extensionDir);
+  clearServiceWorkerCache();
 
   if (install.platform === 'darwin') {
     disableMacAutoUpdates(install.appPath);
@@ -1641,6 +1783,7 @@ async function cmdPatch(extensionDir) {
     throw new Error('Claude Desktop not found. Use "install" to automatically download and install it.');
   }
   await patchAsar(install.asarPath, extensionDir);
+  clearServiceWorkerCache();
   if (install.platform === 'darwin') {
     disableMacAutoUpdates(install.appPath);
     updateInfoPlistHash(install.appPath, install.asarPath);
@@ -1661,6 +1804,7 @@ function cmdUnpatch() {
   const install = locateClaude();
   if (!install) throw new Error('Claude Desktop not found.');
   unpatchAsar(install.asarPath);
+  clearServiceWorkerCache();
   if (install.platform === 'darwin') {
     disableMacAutoUpdates(install.appPath);
     updateInfoPlistHash(install.appPath, install.asarPath);

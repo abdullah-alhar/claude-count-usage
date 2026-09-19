@@ -5,7 +5,34 @@ import { CONFIG, sleep, RawLog, FORCE_DEBUG, StoredMap, getStorageValue, setStor
 async function Log(...args) {
 	await RawLog("tokenManagement", ...args);
 }
-const API_MODEL_SLUG = "claude-opus-5";
+
+// The static multiplier from CONFIG is the fallback until enough real count_tokens samples exist.
+// Samples were only ever logged on the (now removed) API-key path, so new installs stay on the
+// fallback; entries already recorded still apply until they expire.
+const DEFAULT_ESTIMATION_MULTIPLIER = CONFIG.ESTIMATION_MULTIPLIER;
+const CALIBRATION_MIN_SAMPLES = 20;
+// count_tokens adds per-message framing tokens that o200k never sees; on short texts that overhead
+// dominates the ratio, so those samples are left out.
+const CALIBRATION_MIN_O200K_TOKENS = 50;
+const CALIBRATION_BOUNDS = [1.0, 2.5];
+
+// Token-weighted ratio of real to o200k counts across the calibration log. Weighting by size keeps
+// many small samples from outvoting the long conversations whose estimates matter most.
+function computeCalibratedMultiplier(entries, fallback = DEFAULT_ESTIMATION_MULTIPLIER) {
+	let realSum = 0;
+	let o200kSum = 0;
+	let samples = 0;
+	for (const entry of entries || []) {
+		if (!entry || !(entry.real > 0) || !(entry.o200k >= CALIBRATION_MIN_O200K_TOKENS)) continue;
+		realSum += entry.real;
+		o200kSum += entry.o200k;
+		samples++;
+	}
+	if (samples < CALIBRATION_MIN_SAMPLES || o200kSum === 0) return fallback;
+	const ratio = realSum / o200kSum;
+	const [lo, hi] = CALIBRATION_BOUNDS;
+	return Math.round(Math.min(hi, Math.max(lo, ratio)) * 1000) / 1000;
+}
 // Move getTextFromContent here since it's token-related
 async function getTextFromContent(content, includeEphemeral = false, api = null, orgId = null) {
 	let textPieces = [];
@@ -72,33 +99,15 @@ class TokenCounter {
 		this.calibrationLog = new StoredMap("tokenCalibration");
 	}
 
-	// Core text counting - the main workhorse
+	// Core text counting - the main workhorse. Always local (o200k x multiplier); the optional
+	// Anthropic API key path was removed - it needed a developer console key, which a claude.ai
+	// account (and every free user) doesn't have.
 	async countText(text) {
 		if (!text) return 0;
-
-		// Try API first if available
-		const apiKey = await this.getApiKey();
-		if (apiKey) {
-			try {
-				const tokens = await this.callMessageAPI([text], [], apiKey);
-				if (tokens > 0) {
-					// Log calibration data: real vs estimated
-					await this.logCalibration(text, tokens);
-					return tokens;
-				}
-			} catch (error) {
-				await Log("warn", "API token counting failed, falling back to estimation:", error);
-			}
-		}
-
-		// Fallback to local estimation
 		return Math.round(this.tokenizer.countTokens(text) * this.ESTIMATION_MULTIPLIER);
 	}
 
-	// Local-only count: synchronous, never touches the network. For the provisional SSE estimate,
-	// where a round-trip would defeat the whole point of being fast. countText's API path gives a
-	// truer number when a key is set, so the two can disagree slightly - that's fine here, the
-	// authoritative pass follows moments later.
+	// Synchronous twin of countText, for the provisional SSE estimate on the hot path.
 	countTextLocal(text) {
 		if (!text) return 0;
 		return Math.round(this.tokenizer.countTokens(text) * this.ESTIMATION_MULTIPLIER);
@@ -106,32 +115,15 @@ class TokenCounter {
 
 	// Count a conversation's messages
 	async countMessages(userMessages, assistantMessages) {
-		const apiKey = await this.getApiKey();
-		if (apiKey) {
-			try {
-				const tokens = await this.callMessageAPI(userMessages, assistantMessages, apiKey);
-				if (tokens > 0) {
-					// Log calibration data for the whole conversation
-					const allText = [...userMessages, ...assistantMessages].join('\n');
-					await this.logCalibration(allText, tokens);
-					return tokens;
-				}
-			} catch (error) {
-				await Log("warn", "API message counting failed, falling back to estimation:", error);
-			}
-		}
-
-		// Fallback: sum all messages using local estimation directly
 		let total = 0;
 		for (const msg of [...userMessages, ...assistantMessages]) {
-			// Use the tokenizer directly to avoid redundant API attempts
 			total += Math.round(this.tokenizer.countTokens(msg) * this.ESTIMATION_MULTIPLIER);
 		}
 		return total;
 	}
 
 	// Log both estimated and real token counts for calibration.
-	// Rolling window of last 200 entries, viewable via debug.html.
+	// Entries expire after 30 days and feed computeCalibratedMultiplier.
 	async logCalibration(text, realTokens) {
 		try {
 			const o200kRaw = this.tokenizer.countTokens(text);
@@ -152,13 +144,25 @@ class TokenCounter {
 			await this.calibrationLog.set(String(entry.ts), entry, 30 * 24 * 60 * 60 * 1000);
 
 			await Log(`Calibration: real=${realTokens} est=${estimated} o200k=${o200kRaw} ratio=${ratio} len=${text.length}`);
+			await this.refreshCalibratedMultiplier();
 		} catch (e) {
 			// Never let calibration logging break the main flow
 			await Log("warn", "Calibration log error:", e);
 		}
 	}
 
-	// Get all calibration data (for debug page)
+	// CONFIG is updated too so content scripts (sse_bridge.js) get the same figure via getConfig.
+	async refreshCalibratedMultiplier() {
+		const entries = await this.calibrationLog.entries();
+		const multiplier = computeCalibratedMultiplier(entries.map(([, entry]) => entry));
+		if (multiplier !== this.ESTIMATION_MULTIPLIER) {
+			await Log(`Estimation multiplier ${this.ESTIMATION_MULTIPLIER} -> ${multiplier} (${entries.length} calibration entries)`);
+		}
+		this.ESTIMATION_MULTIPLIER = multiplier;
+		CONFIG.ESTIMATION_MULTIPLIER = multiplier;
+		return multiplier;
+	}
+
 	async getCalibrationData() {
 		return await this.calibrationLog.entries();
 	}
@@ -173,23 +177,8 @@ class TokenCounter {
 			return cachedValue;
 		}
 
-		const apiKey = await this.getApiKey();
-		let tokens = 0;
-
-		if (apiKey && fileContent) {
-			try {
-				tokens = await this.callFileAPI(fileContent, mediaType, apiKey);
-				if (tokens > 0) {
-					await this.fileTokenCache.set(cacheKey, tokens);
-					return tokens;
-				}
-			} catch (error) {
-				await Log("warn", "API file counting failed, falling back to estimation:", error);
-			}
-		}
-
-		// Fallback to estimation using file metadata
-		tokens = this.estimateFileTokens(fileMetadata);
+		// Estimated from file metadata (page count / image size)
+		const tokens = this.estimateFileTokens(fileMetadata);
 		await this.fileTokenCache.set(cacheKey, tokens);
 		return tokens;
 	}
@@ -206,106 +195,6 @@ class TokenCounter {
 		return 0;
 	}
 
-	async callMessageAPI(userMessages, assistantMessages, apiKey) {
-		const messages = this.formatMessagesForAPI(userMessages, assistantMessages);
-
-		const response = await fetch('https://api.anthropic.com/v1/messages/count_tokens', {
-			method: 'POST',
-			headers: {
-				'anthropic-version': '2023-06-01',
-				'content-type': 'application/json',
-				'x-api-key': apiKey,
-				'Access-Control-Allow-Origin': '*',
-				"anthropic-dangerous-direct-browser-access": "true"
-			},
-			body: JSON.stringify({
-				messages,
-				model: API_MODEL_SLUG
-			})
-		});
-
-		const data = await response.json();
-		if (data.error) {
-			throw new Error(`API error: ${data.error.message || JSON.stringify(data.error)}`);
-		}
-
-		return data.input_tokens || 0;
-	}
-
-	// API call for files
-	async callFileAPI(fileContent, mediaType, apiKey) {
-		const fileData = {
-			type: mediaType.startsWith('image/') ? 'image' : 'document',
-			source: {
-				type: 'base64',
-				media_type: mediaType,
-				data: fileContent
-			}
-		};
-
-		const messages = [{
-			role: "user",
-			content: [
-				fileData,
-				{ type: "text", text: "1" } // Minimal text required
-			]
-		}];
-
-		const response = await fetch('https://api.anthropic.com/v1/messages/count_tokens', {
-			method: 'POST',
-			headers: {
-				'anthropic-version': '2023-06-01',
-				'content-type': 'application/json',
-				'x-api-key': apiKey,
-				'Access-Control-Allow-Origin': '*',
-				"anthropic-dangerous-direct-browser-access": "true"
-			},
-			body: JSON.stringify({
-				messages,
-				model: API_MODEL_SLUG
-			})
-		});
-
-		const data = await response.json();
-		if (data.error) {
-			throw new Error(`API error: ${data.error.message || JSON.stringify(data.error)}`);
-		}
-
-		return data.input_tokens || 0;
-	}
-
-	// Format messages for the API
-	formatMessagesForAPI(userMessages, assistantMessages) {
-		const messages = [];
-		const maxLength = Math.max(userMessages.length, assistantMessages.length);
-
-		for (let i = 0; i < maxLength; i++) {
-			if (i < userMessages.length) {
-				messages.push({ role: "user", content: userMessages[i] });
-			}
-			if (i < assistantMessages.length) {
-				messages.push({ role: "assistant", content: assistantMessages[i] });
-			}
-		}
-
-		return messages;
-	}
-
-	// Helper to get API key
-	async getApiKey() {
-		return await getStorageValue('apiKey');
-	}
-
-	// Test if API key is valid
-	async testApiKey(apiKey) {
-		try {
-			const tokens = await this.callMessageAPI(["Test"], [], apiKey);
-			return tokens > 0;
-		} catch (error) {
-			await Log("error", "API key test failed:", error);
-			return false;
-		}
-	}
 }
 
 // How long an org stays "known" without being seen again. Refreshed on every sighting so active
@@ -341,4 +230,5 @@ class TokenStorageManager {
 
 const tokenCounter = new TokenCounter();
 const tokenStorageManager = new TokenStorageManager();
-export { getTextFromContent, tokenCounter, tokenStorageManager };
+tokenCounter.refreshCalibratedMultiplier().catch(error => Log("warn", "Calibration load failed:", error));
+export { getTextFromContent, tokenCounter, tokenStorageManager, computeCalibratedMultiplier };

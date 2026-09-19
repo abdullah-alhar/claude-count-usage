@@ -1,6 +1,6 @@
 /* global CONFIG, Log, setupTooltip, getTooltipPortal, getResetTimeHTML, sleep, sendBackgroundMessage, getActiveOrgId,
    isMobileView, isCodePage, UsageData, ConversationData, getConversationId, getCurrentModel,
-   getCurrentModelVersion, RED_WARNING, BLUE_HIGHLIGHT, SUCCESS_GREEN, SELECTORS,
+   getCurrentModelVersion, SUCCESS_GREEN, getSeverityColorForLimit, getSeverityColorForRemaining, SELECTORS,
    LayoutManager, mountToAnchor, localize, fmtNum, onSsePartialUsage, shouldApplySseSession */
 'use strict';
 
@@ -191,10 +191,10 @@ class LengthUI {
 		}
 
 		// Length
-		const lengthColor = conversationData.isLong() ? RED_WARNING : BLUE_HIGHLIGHT;
+		const lengthColor = getSeverityColorForLimit(conversationData.length, CONFIG.WARNING.LENGTH);
 		const lengthLabel = conversationData.lengthIsEstimate ? localize('length.label_estimate') : localize('length.label');
 		const estimateBadge = conversationData.lengthIsEstimate
-			? ' <span class="ut-estimate-badge" title="' + (localize('length.tooltip_length_note') || 'Estimated — add API key for exact count') + '">~est</span>'
+			? ' <span class="ut-estimate-badge" title="' + (localize('length.tooltip_length_note') || 'Estimated') + '">~est</span>'
 			: '';
 		length.innerHTML = `${lengthLabel}: <span style="color: ${lengthColor}">${fmtNum(conversationData.length)}</span> ${localize('common.unit_tokens')}${estimateBadge}`;
 
@@ -212,7 +212,7 @@ class LengthUI {
 		if (conversationData.isCurrentlyCached(currentModelVersion)) {
 			costColor = SUCCESS_GREEN;
 		} else {
-			costColor = conversationData.isExpensive() ? RED_WARNING : BLUE_HIGHLIGHT;
+			costColor = getSeverityColorForLimit(conversationData.cost, CONFIG.WARNING.COST);
 		}
 
 		// If we're spending credits rather than plan usage, display in dollars instead of credits
@@ -334,7 +334,7 @@ class LengthUI {
 				const remainingDollars = usageData.getExtraUsageRemaining() / 100;
 				const messagesLeft = remainingDollars / costPerMessageDollars;
 				const estimateValue = messagesLeft.toFixed(1);
-				const color = parseFloat(estimateValue) < 15 ? RED_WARNING : BLUE_HIGHLIGHT;
+				const color = getSeverityColorForRemaining(parseFloat(estimateValue), CONFIG.WARNING.MESSAGES_LEFT);
 				estimate.innerHTML = `${msgPrefix} <span style="color: ${color}">${estimateValue}</span>`;
 				return;
 			}
@@ -344,7 +344,7 @@ class LengthUI {
 		// on the plan limits at all, so falling back to them would report a plausible but wrong number.
 		if (!usageData.isModelCreditFunded(currentModel) && limiting && limiting.messagesLeft > 0) {
 			const estimateValue = limiting.messagesLeft.toFixed(1);
-			const color = parseFloat(estimateValue) < 15 ? RED_WARNING : BLUE_HIGHLIGHT;
+			const color = getSeverityColorForRemaining(parseFloat(estimateValue), CONFIG.WARNING.MESSAGES_LEFT);
 			estimate.innerHTML = `${msgPrefix} <span style="color: ${color}">${estimateValue}</span>`;
 			return;
 		}
@@ -373,7 +373,7 @@ class LengthUI {
 	// fetch. Only the estimate depends on it — the cost display keys off the fields the stream
 	// doesn't carry, so it can wait.
 	handleSsePartialUsage({ session }) {
-		if (!this.uiReady || !this.state.usageData) return;
+		if (!this.uiReady || !this.state.usageData || !session) return;
 		if (!shouldApplySseSession(this.state.usageData.limits.session, session)) return;
 
 		this.state.usageData.limits.session = session;

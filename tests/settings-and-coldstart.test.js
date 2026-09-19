@@ -2,14 +2,14 @@
  * Claude Count Usage — Settings & Cold-Start Test Suite
  *
  * Covers:
- *   1. Localization: all 16 settings.* keys exist and resolve (not raw key) in both
+ *   1. Localization: every settings.* key the settings card uses exists and resolve (not raw key) in both
  *      shared/localization.js (ESM) and generated content-components/localization.js
  *      across all 10 supported locales.
  *   2. availableLimitKeys() — exercised via the REAL UsageUI method (not a re-implementation).
  *      Test shapes are modeled on tests/fixtures/usage-response.json, which is a real /usage
  *      response captured immediately after sending a first message on a fresh Pro session.
- *   3. Post-stream refetch throttle: background.js defines POST_STREAM_COOLDOWN_MS and
- *      guards reportStreamCompletion with a lastUsageFetchMs check.
+ *   3. Post-stream refetch throttle: background.js defines POST_STREAM_COOLDOWN_MS, and
+ *      schedulePostStreamRefresh() runs, defers or coalesces the refetch against it.
  *   4. settings_card.js: RefreshUsage() sends 'refreshUsageData', disables button, shows states.
  *      Exercised by instantiating SettingsCard against a minimal JSDOM-like sandbox and calling
  *      refreshUsage() with a mocked sendBackgroundMessage.
@@ -136,11 +136,18 @@ function createUsageUISandbox() {
 
 const SUPPORTED_LOCALES = ['en', 'fr', 'de', 'hi', 'id', 'it', 'ja', 'ko', 'pt-BR', 'es'];
 const REQUIRED_SETTINGS_KEYS = [
-	'settings.title', 'settings.api_key_label', 'settings.api_key_hint',
-	'settings.save', 'settings.clear', 'settings.display_label',
-	'settings.key_active', 'settings.key_empty', 'settings.key_validating',
-	'settings.key_saved', 'settings.key_invalid', 'settings.key_error',
+	'settings.title', 'settings.close', 'settings.clear', 'settings.display_label',
 	'settings.refresh', 'settings.refreshing', 'settings.refresh_success', 'settings.refresh_error',
+	'settings.refresh_label', 'settings.refresh_hint',
+	'settings.section_usage', 'settings.section_notifications', 'settings.section_updates', 'settings.section_more',
+	'settings.notif_toggle', 'settings.notif_threshold',
+	'settings.update_auto', 'settings.update_auto_hint', 'settings.update_check_now', 'settings.update_checking',
+	'settings.update_version', 'settings.update_up_to_date', 'settings.update_available', 'settings.update_download',
+	'settings.update_release_notes', 'settings.update_how_mac', 'settings.update_how_windows', 'settings.update_how_other',
+	'settings.update_error', 'settings.update_checked_at', 'settings.update_never',
+	'settings.language_label', 'settings.language_auto', 'settings.language_reload_hint', 'settings.language_reload',
+	'settings.debug_hint', 'settings.debug_show', 'settings.debug_hide', 'settings.debug_copy',
+	'settings.debug_copied', 'settings.debug_empty', 'common.debug_logs', 'usage.starts_next_message',
 ];
 
 // ─── Main Test Runner ────────────────────────────────────────────────────────
@@ -284,17 +291,61 @@ console.log('\n=== 3. Post-stream refetch throttle in background.js ===');
 	assert(/function refreshUsage[\s\S]{0,400}lastUsageFetchMs\s*=\s*Date\.now\(\)/.test(bgSrc),
 		'refreshUsage() records lastUsageFetchMs = Date.now()');
 
-	// 3d: reportStreamCompletion guards on msSinceLastFetch >= POST_STREAM_COOLDOWN_MS
-	assert(
-		/reportStreamCompletion[\s\S]{0,800}msSinceLastFetch\s*>=\s*POST_STREAM_COOLDOWN_MS/.test(bgSrc),
-		'reportStreamCompletion skips refetch when within cooldown window'
-	);
+	// 3d: reportStreamCompletion delegates to schedulePostStreamRefresh. (Previously it dropped a
+	//     refetch inside the cooldown and only logged; that left the bars stale after a message
+	//     sent soon after opening a chat, so the refetch is now deferred to the cooldown's end.)
+	assert(/reportStreamCompletion[\s\S]{0,400}schedulePostStreamRefresh\(api, orgId\)/.test(bgSrc),
+		'reportStreamCompletion schedules the post-stream refetch');
 
-	// 3e: the skip branch logs (never silent)
-	assert(
-		/reportStreamCompletion[\s\S]{0,1200}Post-stream refetch skipped/.test(bgSrc),
-		'reportStreamCompletion logs when refetch is skipped (not silent)'
-	);
+	// 3e: execute schedulePostStreamRefresh against a fake clock
+	const fnMatch = bgSrc.match(/async function schedulePostStreamRefresh\(api, orgId\) \{([\s\S]*?)\n\}/);
+	assert(!!fnMatch, 'background.js defines schedulePostStreamRefresh()');
+	if (fnMatch) {
+		const env = {
+			now: 0, lastUsageFetchMs: 0, deferredPostStreamRefresh: null,
+			timers: [], refreshes: 0, logs: []
+		};
+		const body = fnMatch[1]
+			.replace(/Date\.now\(\)/g, 'env.now')
+			.replace(/lastUsageFetchMs/g, 'env.lastUsageFetchMs')
+			.replace(/deferredPostStreamRefresh/g, 'env.deferredPostStreamRefresh');
+		// eslint-disable-next-line no-new-func
+		const schedule = new Function('env', 'POST_STREAM_COOLDOWN_MS', 'pendingTasks', 'processNextTask',
+			'refreshUsage', 'Log', 'setTimeout', 'api', 'orgId',
+			'"use strict"; return (async function(){ ' + body + ' })();');
+		const cooldown = 10000;
+		const tasks = [];
+		const run = () => schedule(env, cooldown, tasks,
+			() => { while (tasks.length) tasks.shift()(); },
+			async () => { env.refreshes++; env.lastUsageFetchMs = env.now; },
+			async (...a) => { env.logs.push(a.join(' ')); },
+			(fn, ms) => { env.timers.push({ fn, at: env.now + ms }); return env.timers.length; },
+			{}, 'org');
+		const fireTimers = () => { const t = env.timers.splice(0); t.forEach(x => { env.now = x.at; x.fn(); }); };
+
+		env.now = 100000; env.lastUsageFetchMs = 50000;
+		assert(await run() === 'now', 'outside the cooldown the refetch runs immediately');
+		await new Promise(r => setImmediate(r));
+		assert(env.refreshes === 1, 'immediate refetch calls refreshUsage once');
+
+		env.now = 103000; // 3s after that fetch
+		assert(await run() === 'deferred', 'inside the cooldown the refetch is deferred, not dropped');
+		assert(env.timers.length === 1 && env.timers[0].at === 110000,
+			'deferred refetch is timed for the end of the cooldown');
+		assert(await run() === 'coalesced', 'a second stream inside the cooldown coalesces into the pending one');
+		assert(env.logs.some(l => l.includes('deferred')), 'deferral is logged (not silent)');
+		fireTimers();
+		await new Promise(r => setImmediate(r));
+		assert(env.refreshes === 2, 'deferred refetch fires once when the cooldown ends');
+		assert(env.deferredPostStreamRefresh === null, 'deferred timer handle is cleared after firing');
+
+		env.now = 112000;
+		await run();
+		env.lastUsageFetchMs = 115000; // e.g. a heartbeat landed after the stream ended
+		fireTimers();
+		await new Promise(r => setImmediate(r));
+		assert(env.refreshes === 2, 'deferred refetch is skipped if a newer fetch already covered the stream');
+	}
 
 	// 3f: refreshUsageData (manual button path) does NOT check lastUsageFetchMs — it must
 	//     bypass the auto-cooldown since it has its own UI-level 2s cooldown.
@@ -384,6 +435,10 @@ console.log('\n=== 4. SettingsCard.refreshUsage() execution test ===');
 		BLUE_HIGHLIGHT:  '#2c84db',
 		SUCCESS_GREEN:   '#00b37e',
 		RED_WARNING:     '#ff4444',
+		CONFIG:          { WARNING_THRESHOLD: 0.9, CAUTION_THRESHOLD: 0.7 },
+		getSeverityColor: (pct) => (pct >= 90 ? '#ff4444' : pct >= 70 ? '#dd6b0a' : '#2c84db'),
+		localeForIntl:   () => 'en',
+		applyLocale:     async () => {},
 		SIDEBAR_DISPLAY_KEY: 'sidebarDisplayPrefs',
 		getSidebarDisplayPrefs: async () => ({}),
 		isSidebarItemVisible:   () => true,
@@ -461,6 +516,89 @@ console.log('\n=== 4. SettingsCard.refreshUsage() execution test ===');
 	flushTimeouts();
 	assert(btn.disabled === false,
 		"refreshBtn is re-enabled after error cooldown completes");
+
+	// ── 4c. Updates section: checkForUpdatesNow() follows the same pattern ──
+	console.log('\n  [4c. SettingsCard.checkForUpdatesNow()]');
+	const allNodes = (node, out = []) => { out.push(node); (node.children || []).forEach(c => allNodes(c, out)); return out; };
+	const textOf = (node) => allNodes(node).map(n => n.textContent || '').join(' ');
+	const updateBtn = card.elements.updateCheckBtn;
+	const updateStatus = card.elements.updateCheckStatus;
+	const updateInfo = card.elements.updateInfo;
+	// Status line + the callout row that only appears when an update exists.
+	const updateArea = { children: [card.elements.updateInfo, card.elements.updateCallout] };
+	const clearUpdateArea = () => { card.elements.updateInfo.children = []; card.elements.updateCallout.children = []; };
+	assert(!!updateBtn && !!updateStatus && !!updateInfo, 'settings card exposes the update check button, status and info');
+
+	// The manual check must not depend on the automatic toggle.
+	card.elements.updateAutoToggle.checked = false;
+	const releaseUrl = 'https://github.com/abdullah-alhar/claude-count-usage/releases/tag/v1.4';
+	const macZip = 'https://github.com/abdullah-alhar/claude-count-usage/releases/download/v1.4/Mac.installer.zip';
+	sendBgResolveWith = {
+		currentVersion: '1.3', latestVersion: '1.4', updateAvailable: true,
+		releaseUrl, downloadUrl: macZip, checkedAt: Date.now(), error: null
+	};
+	sendBgCalls.length = 0;
+	clearUpdateArea();
+	let pendingCheck = card.checkForUpdatesNow();
+	assert(updateBtn.disabled === true, 'update button is disabled while the check runs');
+	assert(updateStatus.textContent === 'settings.update_checking', 'shows the checking state while the check runs');
+	await pendingCheck;
+	assert(sendBgCalls.some(c => c.type === 'checkForUpdatesNow'),
+		"sends 'checkForUpdatesNow' even with the automatic check toggled off");
+	const infoText = textOf(updateArea);
+	assert(infoText.includes('1.3') && infoText.includes('1.4') && infoText.includes('→'),
+		'update available: shows current → latest version');
+	const links = allNodes(updateArea).filter(n => n.tagName === 'A');
+	assert(links.some(a => a.href === macZip && a.target === '_blank' && a.rel.includes('noopener')),
+		'links the platform download in a new window with noopener');
+	assert(links.some(a => a.href === releaseUrl), 'links the GitHub release page');
+	assert(updateStatus.style.display === 'none', 'successful check leaves the result to the info block');
+
+	sendBgCalls.length = 0;
+	await card.checkForUpdatesNow();
+	assert(sendBgCalls.length === 0, 'spam click during the update cooldown is blocked');
+	flushTimeouts();
+	assert(updateBtn.disabled === false, 'update button is re-enabled after the cooldown');
+
+	// Error path
+	sendBgResolveWith = { currentVersion: '1.3', checkedAt: Date.now(), error: 'GitHub responded 403' };
+	clearUpdateArea();
+	await card.checkForUpdatesNow();
+	assert(updateStatus.style.color === '#ff4444' && updateStatus.textContent.includes('403'),
+		'failed check shows a red error with the reason');
+	flushTimeouts();
+	assert(updateBtn.disabled === false, 'update button is re-enabled after a failed check');
+
+	// Thrown error (background unreachable)
+	const originalSend = sandbox.sendBackgroundMessage;
+	sandbox.sendBackgroundMessage = async () => { throw new Error('no background'); };
+	await card.checkForUpdatesNow();
+	assert(updateStatus.style.color === '#ff4444', 'a thrown error also shows the red error state');
+	flushTimeouts();
+	assert(updateBtn.disabled === false, 'update button is re-enabled after a thrown error');
+	sandbox.sendBackgroundMessage = originalSend;
+
+	// Up to date
+	clearUpdateArea();
+	card.renderUpdateStatus('1.4', { currentVersion: '1.4', latestVersion: '1.4', updateAvailable: false, checkedAt: Date.now(), error: null });
+	assert(textOf(updateArea).includes('settings.update_up_to_date'), 'up to date: shows the up-to-date state');
+	assert(!allNodes(updateArea).some(n => n.tagName === 'A'), 'up to date: no download link');
+
+	// Hostile / malformed URLs are never rendered as links
+	clearUpdateArea();
+	card.renderUpdateStatus('1.3', {
+		currentVersion: '1.3', latestVersion: '9.9', updateAvailable: true,
+		releaseUrl: 'https://evil.example/release', downloadUrl: 'javascript:alert(1)', checkedAt: Date.now(), error: null
+	});
+	assert(!allNodes(updateArea).some(n => n.tagName === 'A'), 'non-github.com release URLs are not rendered as links');
+
+	// Automatic toggle relays to the background
+	sendBgCalls.length = 0;
+	card.elements.updateAutoToggle.checked = false;
+	card.elements.updateAutoToggle._listeners.change.forEach(fn => fn());
+	await new Promise(r => setImmediate(r));
+	assert(sendBgCalls.some(c => c.type === 'setAutoUpdateCheck' && c.value === false),
+		"turning the toggle off sends setAutoUpdateCheck(false)");
 }
 
 // ─── 5. refreshUsage() helper execution test ────────────────────────────────
@@ -696,20 +834,19 @@ console.log('\n=== 8. scheduleResetNotifications() prompt alarm scheduling & ded
 		const updateAllTabsWithUsage = async () => {
 			calls.push('updateAllTabsWithUsage');
 		};
-		const isElectron = false;
 		const Log = async () => {};
 
 		// eslint-disable-next-line no-new-func
 		const handleAlarm = new Function(
 			'alarmName', 'clearAlarm', 'browser', 'requestActiveOrgId',
 			'getStrategy', 'refreshUsage', 'checkResetNotifications',
-			'updateAllTabsWithUsage', 'isElectron', 'Log',
+			'updateAllTabsWithUsage', 'Log',
 			'"use strict"; return (async function(){ ' + handleAlarmMatch[1] + ' })();'
 		);
 
 		await handleAlarm('resetRefresh:my-org:session:123456789', clearAlarm, browser,
 			requestActiveOrgId, getStrategy, refreshUsage, checkResetNotifications,
-			updateAllTabsWithUsage, isElectron, Log);
+			updateAllTabsWithUsage, Log);
 
 		assert(calls.some(c => c.startsWith('clearAlarm:resetRefresh:my-org')),
 			'handleAlarm() clears one-shot resetRefresh alarm');
@@ -718,6 +855,383 @@ console.log('\n=== 8. scheduleResetNotifications() prompt alarm scheduling & ded
 		assert(calls.includes('checkResetNotifications'),
 			'handleAlarm() triggers checkResetNotifications promptly on reset');
 	}
+}
+
+// ─── 9. Calibrated estimation multiplier (tokenManagement.js) ───────────────
+console.log('\n=== 9. computeCalibratedMultiplier() ===');
+{
+	const src = fs.readFileSync(path.join(rootDir, 'bg-components', 'tokenManagement.js'), 'utf8');
+	const consts = ['CALIBRATION_MIN_SAMPLES', 'CALIBRATION_MIN_O200K_TOKENS', 'CALIBRATION_BOUNDS']
+		.map(name => src.match(new RegExp('const ' + name + ' = [^;]+;'))?.[0]);
+	const fnSrc = src.match(/function computeCalibratedMultiplier[\s\S]*?\n\}/)?.[0];
+	assert(consts.every(Boolean) && !!fnSrc, 'tokenManagement.js defines the calibration constants and function');
+	// eslint-disable-next-line no-new-func
+	const compute = new Function('DEFAULT_ESTIMATION_MULTIPLIER',
+		consts.join('\n') + '\n' + fnSrc + '\nreturn computeCalibratedMultiplier;')(1.4);
+	const samples = (n, real, o200k) => Array.from({ length: n }, () => ({ real, o200k }));
+
+	assert(compute([]) === 1.4, 'no samples -> falls back to 1.4');
+	assert(compute(samples(19, 1200, 1000)) === 1.4, '19 samples -> still the 1.4 fallback');
+	assert(compute(samples(20, 1200, 1000)) === 1.2, '20 samples at ratio 1.2 -> 1.2');
+	assert(compute([...samples(20, 1200, 1000), ...samples(50, 400, 10)]) === 1.2,
+		'samples under the minimum o200k size are ignored');
+	assert(compute([...samples(10, 1000, 1000), ...samples(10, 20000, 10000)]) === 1.909,
+		'ratio is token-weighted (large conversations dominate)');
+	assert(compute(samples(20, 5000, 1000)) === 2.5, 'implausibly high ratio is clamped to 2.5');
+	assert(compute(samples(20, 500, 1000)) === 1.0, 'implausibly low ratio is clamped to 1.0');
+	assert(compute([null, { real: 0, o200k: 500 }, ...samples(20, 1300, 1000)]) === 1.3,
+		'malformed / zero entries are skipped');
+}
+
+// ─── 10. Idle usage heartbeat (background.js) ───────────────────────────────
+console.log('\n=== 10. runUsageHeartbeat() idle refresh ===');
+{
+	const bgSrc = fs.readFileSync(path.join(rootDir, 'background.js'), 'utf8');
+	const minutes = Number(bgSrc.match(/const USAGE_HEARTBEAT_MINUTES = (\d+)/)?.[1]);
+	const gap = Number(bgSrc.match(/const HEARTBEAT_MIN_GAP_MS = ([0-9_]+)/)?.[1].replace(/_/g, ''));
+	assert(minutes >= 1 && minutes <= 5, 'heartbeat period is 1-5 minutes (' + minutes + ')');
+	assert(gap > 0 && gap < minutes * 60000, 'heartbeat min gap is shorter than its period');
+	assert(/\[USAGE_HEARTBEAT_ALARM, USAGE_HEARTBEAT_MINUTES\]/.test(bgSrc),
+		'ensurePeriodicAlarms() arms the heartbeat alarm');
+
+	const fnMatch = bgSrc.match(/async function runUsageHeartbeat\(reason\) \{([\s\S]*?)\n\}/);
+	assert(!!fnMatch, 'background.js defines runUsageHeartbeat()');
+	if (fnMatch) {
+		const env = { now: 0, lastUsageFetchMs: 0, heartbeatInFlight: false, refreshed: [], tabs: [{ id: 1 }] };
+		const body = fnMatch[1]
+			.replace(/Date\.now\(\)/g, 'env.now')
+			.replace(/lastUsageFetchMs/g, 'env.lastUsageFetchMs')
+			.replace(/heartbeatInFlight/g, 'env.heartbeatInFlight');
+		// eslint-disable-next-line no-new-func
+		const beat = new Function('env', 'HEARTBEAT_MIN_GAP_MS', 'browser', 'requestActiveOrgId',
+			'refreshUsage', 'getStrategy', 'Log', 'reason',
+			'"use strict"; return (async function(){ ' + body + ' })();');
+		const run = () => beat(env, gap,
+			{ tabs: { query: async () => env.tabs } },
+			async () => 'org-1',
+			async (api, orgId) => { env.refreshed.push(orgId); env.lastUsageFetchMs = env.now; },
+			() => ({ apiForTab: () => ({}) }),
+			async () => {}, 'test');
+
+		env.now = 10 * 60000;
+		assert(await run() === true && env.refreshed.length === 1, 'idle heartbeat refreshes usage');
+		env.now += gap - 1;
+		assert(await run() === false && env.refreshed.length === 1, 'heartbeat within the min gap is skipped');
+		env.now += 1;
+		assert(await run() === true && env.refreshed.length === 2, 'heartbeat after the min gap refreshes again');
+		env.now += gap; env.heartbeatInFlight = true;
+		assert(await run() === false, 'heartbeat does not overlap an in-flight one');
+		env.heartbeatInFlight = false; env.tabs = [];
+		assert(await run() === false, 'heartbeat with no claude.ai page open does nothing');
+		assert(env.heartbeatInFlight === false, 'in-flight flag is released after an early return');
+	}
+}
+
+// ─── 11. Three-tier severity colors (content_utils.js) ─────────────────────
+console.log('\n=== 11. getSeverityColor() three-tier helper ===');
+{
+	const src = fs.readFileSync(path.join(rootDir, 'content-components', 'content_utils.js'), 'utf8');
+	const head = src.slice(0, src.indexOf('const SELECTORS'));
+	// eslint-disable-next-line no-new-func
+	const h = new Function('CONFIG', 'window', head + '\nreturn { BLUE_HIGHLIGHT, ORANGE_WARNING, RED_WARNING, SUCCESS_GREEN, getSeverityColor, getSeverityColorForLimit, getSeverityColorForRemaining };')(
+		{ WARNING_THRESHOLD: 0.9, CAUTION_THRESHOLD: 0.7 }, {});
+	const utilsSrc = fs.readFileSync(path.join(rootDir, 'bg-components', 'utils.js'), 'utf8');
+	assert(/"CAUTION_THRESHOLD": 0\.7/.test(utilsSrc) && /"WARNING_THRESHOLD": 0\.9/.test(utilsSrc),
+		'CONFIG defines CAUTION_THRESHOLD 0.7 and WARNING_THRESHOLD 0.9');
+	assert(new Set([h.BLUE_HIGHLIGHT, h.ORANGE_WARNING, h.RED_WARNING, h.SUCCESS_GREEN]).size === 4,
+		'blue, orange, red and green are four distinct colors');
+
+	const cases = [[0, 'BLUE_HIGHLIGHT'], [69.9, 'BLUE_HIGHLIGHT'], [70, 'ORANGE_WARNING'], [89.9, 'ORANGE_WARNING'],
+		[90, 'RED_WARNING'], [100, 'RED_WARNING'], [140, 'RED_WARNING']];
+	for (const [pct, name] of cases) {
+		assert(h.getSeverityColor(pct) === h[name], `getSeverityColor(${pct}) -> ${name}`);
+	}
+	// eslint-disable-next-line no-new-func
+	const shifted = new Function('CONFIG', 'window', head + '\nreturn getSeverityColor;')({ WARNING_THRESHOLD: 0.8, CAUTION_THRESHOLD: 0.5 }, {});
+	assert(shifted(55) === h.ORANGE_WARNING && shifted(80) === h.RED_WARNING,
+		'thresholds come from CONFIG, not hardcoded');
+
+	assert(h.getSeverityColorForLimit(0, 50000) === h.BLUE_HIGHLIGHT, 'length 0 of 50k -> blue');
+	assert(h.getSeverityColorForLimit(40000, 50000) === h.ORANGE_WARNING, 'length 40k of 50k -> orange');
+	assert(h.getSeverityColorForLimit(50000, 50000) === h.RED_WARNING, 'length at the warning limit -> red (unchanged cutoff)');
+	assert(h.getSeverityColorForLimit(10, 0) === h.BLUE_HIGHLIGHT, 'a missing limit never produces a warning color');
+
+	assert(h.getSeverityColorForRemaining(14.9, 15) === h.RED_WARNING, '14.9 messages left -> red (unchanged cutoff)');
+	assert(h.getSeverityColorForRemaining(15, 15) === h.ORANGE_WARNING, '15 messages left -> orange');
+	assert(h.getSeverityColorForRemaining(44.9, 15) === h.ORANGE_WARNING, '44.9 messages left -> orange');
+	assert(h.getSeverityColorForRemaining(45, 15) === h.BLUE_HIGHLIGHT, '45 messages left -> blue');
+
+	// Nobody re-implements the threshold check inline any more.
+	for (const file of ['content_utils.js', 'usage_ui.js', 'length_ui.js', 'settings_card.js']) {
+		const code = fs.readFileSync(path.join(rootDir, 'content-components', file), 'utf8');
+		const inline = /WARNING_THRESHOLD\s*\*\s*100\s*\?|PERCENT_THRESHOLD|isLong\(\)\s*\?|isExpensive\(\)\s*\?|<\s*15\s*\?/.test(code);
+		assert(!inline, `${file} has no inline threshold -> color checks`);
+	}
+
+	const css = fs.readFileSync(path.join(rootDir, 'tracker-styles.css'), 'utf8');
+	assert(css.toLowerCase().includes('--ut-orange: ' + h.ORANGE_WARNING.toLowerCase()),
+		'tracker-styles.css --ut-orange mirrors ORANGE_WARNING');
+}
+
+// ─── 12. Update check: version comparison and storage (update-check.js) ─────
+console.log('\n=== 12. update-check.js ===');
+{
+	const uc = await import(path.join(rootDir, 'bg-components', 'update-check.js'));
+
+	assert(uc.RELEASES_API_URL === 'https://api.github.com/repos/abdullah-alhar/claude-count-usage/releases/latest',
+		'checks exactly this repo\'s latest-release endpoint');
+	const cmp = [['1.4', '1.3', 1], ['1.3', '1.4', -1], ['1.3', '1.3.0', 0], ['v1.3', '1.3', 0], ['1.10', '1.9', 1],
+		['2.0', '1.99.99', 1], ['1.3.1', '1.3', 1], ['1.3-beta', '1.3', 0], ['', '1.3', -1], ['V2', 'v1.9', 1]];
+	for (const [a, b, want] of cmp) {
+		assert(uc.compareVersions(a, b) === want, `compareVersions('${a}', '${b}') === ${want}`);
+	}
+
+	const release = {
+		tag_name: 'v1.4', html_url: 'https://github.com/abdullah-alhar/claude-count-usage/releases/tag/v1.4',
+		assets: [
+			{ name: 'Mac installer.zip', browser_download_url: 'https://github.com/x/mac.zip' },
+			{ name: 'windows installer.zip', browser_download_url: 'https://github.com/x/win.zip' }
+		]
+	};
+	assert(uc.pickDownloadUrl(release, 'mac') === 'https://github.com/x/mac.zip', 'Mac gets the Mac installer');
+	assert(uc.pickDownloadUrl(release, 'windows') === 'https://github.com/x/win.zip', 'Windows gets the Windows installer');
+	assert(uc.pickDownloadUrl(release, 'other') === release.html_url, 'other platforms get the release page');
+	assert(uc.pickDownloadUrl({ html_url: release.html_url, assets: [] }, 'mac') === release.html_url,
+		'no assets -> release page');
+	assert(uc.detectPlatform('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Electron/30') === 'mac', 'detects Mac');
+	assert(uc.detectPlatform('Mozilla/5.0 (Windows NT 10.0; Win64; x64) Electron/30') === 'windows', 'detects Windows');
+
+	const makeStore = () => {
+		const data = {};
+		return {
+			data,
+			getStorageValue: async (k, d) => (k in data ? data[k] : d),
+			setStorageValue: async (k, v) => { data[k] = v; }
+		};
+	};
+	const fetchCalls = [];
+	const okFetch = async (url, opts) => { fetchCalls.push({ url, opts }); return { ok: true, status: 200, json: async () => release }; };
+
+	const store = makeStore();
+	const status = await uc.checkForUpdates({ fetchImpl: okFetch, currentVersion: '1.3', platform: 'mac', now: 1000, ...store });
+	assert(fetchCalls.length === 1 && fetchCalls[0].url === uc.RELEASES_API_URL, 'contacts only the releases API, once');
+	assert(fetchCalls[0].opts.credentials === 'omit', 'sends no cookies/credentials');
+	assert(status.updateAvailable === true && status.latestVersion === '1.4' && status.currentVersion === '1.3',
+		'1.3 installed, v1.4 released -> update available');
+	assert(status.downloadUrl === 'https://github.com/x/mac.zip' && status.releaseUrl === release.html_url,
+		'stores the download and release URLs');
+	assert(store.data[uc.UPDATE_STATUS_KEY] && store.data[uc.UPDATE_STATUS_KEY].checkedAt === 1000,
+		'persists the result with its check time under UPDATE_STATUS_KEY');
+
+	const sameStore = makeStore();
+	const same = await uc.checkForUpdates({ fetchImpl: okFetch, currentVersion: '1.4', platform: 'mac', now: 1000, ...sameStore });
+	assert(same.updateAvailable === false, 'same version installed -> no update');
+
+	// Failure keeps the last known release and records the error.
+	const failFetch = async () => ({ ok: false, status: 403, json: async () => ({}) });
+	const failed = await uc.checkForUpdates({ fetchImpl: failFetch, currentVersion: '1.3', platform: 'mac', now: 5000, ...store });
+	assert(failed.error && failed.error.includes('403'), 'HTTP failure is recorded as an error');
+	assert(failed.latestVersion === '1.4' && failed.updateAvailable === true,
+		'a failed check keeps the last known latest version');
+	assert(failed.checkedAt === 5000 && store.data[uc.UPDATE_STATUS_KEY].error, 'failed check is persisted too');
+
+	const throwStore = makeStore();
+	const thrown = await uc.checkForUpdates({ fetchImpl: async () => { throw new Error('offline'); }, currentVersion: '1.3', platform: 'mac', now: 1, ...throwStore });
+	assert(thrown.error === 'offline' && !thrown.updateAvailable, 'network error with no history -> error, no update claimed');
+
+	assert(uc.isStatusStale(null, 0) === true, 'no stored result is stale');
+	assert(uc.isStatusStale({ checkedAt: 1000 }, 1000 + uc.UPDATE_CHECK_INTERVAL_MS - 1) === false, 'result inside the interval is fresh');
+	assert(uc.isStatusStale({ checkedAt: 1000 }, 1000 + uc.UPDATE_CHECK_INTERVAL_MS) === true, 'result at the interval is stale');
+	assert(uc.UPDATE_CHECK_INTERVAL_MS >= 12 * 3600000 && uc.UPDATE_CHECK_INTERVAL_MS <= 24 * 3600000,
+		'automatic check interval is 12-24h');
+}
+
+// ─── 13. Automatic update check toggle (background.js) ──────────────────────
+console.log('\n=== 13. Automatic update check toggle ===');
+{
+	const bgSrc = fs.readFileSync(path.join(rootDir, 'background.js'), 'utf8');
+	const body = (name) => bgSrc.match(new RegExp('async function ' + name + '\\(\\) \\{([\\s\\S]*?)\\n\\}'))?.[1];
+
+	const scheduledSrc = body('runScheduledUpdateCheck');
+	assert(!!scheduledSrc, 'background.js defines runScheduledUpdateCheck()');
+	const store = {};
+	let checks = 0;
+	// eslint-disable-next-line no-new-func
+	const runScheduled = new Function('getStorageValue', 'isStatusStale', 'runUpdateCheck', 'Log',
+		'AUTO_UPDATE_CHECK_KEY', 'UPDATE_STATUS_KEY',
+		'"use strict"; return (async function(){ ' + scheduledSrc + ' })();');
+	const uc = await import(path.join(rootDir, 'bg-components', 'update-check.js'));
+	const go = () => runScheduled(async (k, d) => (k in store ? store[k] : d), uc.isStatusStale,
+		async () => { checks++; return { checkedAt: Date.now() }; }, async () => {}, 'autoUpdateCheck', 'updateCheckStatus');
+
+	await go();
+	assert(checks === 1, 'toggle on by default + never checked -> checks');
+	store.updateCheckStatus = { checkedAt: Date.now() };
+	await go();
+	assert(checks === 1, 'toggle on + fresh result -> does not re-check');
+	store.updateCheckStatus = { checkedAt: 0 };
+	store.autoUpdateCheck = false;
+	await go();
+	assert(checks === 1, 'toggle off -> scheduled check never contacts GitHub, even when stale');
+	store.autoUpdateCheck = true;
+	await go();
+	assert(checks === 2, 'toggle back on + stale -> checks');
+
+	const alarmsSrc = body('ensurePeriodicAlarms');
+	assert(!!alarmsSrc, 'background.js defines ensurePeriodicAlarms()');
+	const armed = {};
+	const cleared = [];
+	// eslint-disable-next-line no-new-func
+	const ensure = new Function('getStorageValue', 'getAlarm', 'scheduleAlarm', 'clearAlarm',
+		'AUTO_UPDATE_CHECK_KEY', 'UPDATE_CHECK_ALARM', 'UPDATE_CHECK_INTERVAL_MS', 'USAGE_HEARTBEAT_ALARM', 'USAGE_HEARTBEAT_MINUTES',
+		'"use strict"; return (async function(){ ' + alarmsSrc + ' })();');
+	const runEnsure = (auto) => ensure(async (k, d) => (k === 'autoUpdateCheck' ? auto : d),
+		async (n) => armed[n], async (n, o) => { armed[n] = o; }, async (n) => { cleared.push(n); delete armed[n]; },
+		'autoUpdateCheck', 'updateCheck', uc.UPDATE_CHECK_INTERVAL_MS, 'usageHeartbeat', 2);
+
+	await runEnsure(true);
+	assert(armed.updateCheck && armed.updateCheck.periodInMinutes === uc.UPDATE_CHECK_INTERVAL_MS / 60000,
+		'toggle on -> periodic update alarm armed at the check interval');
+	assert(armed.usageHeartbeat && armed.checkResetNotifications, 'heartbeat and reset alarms are armed regardless');
+	await runEnsure(false);
+	assert(!armed.updateCheck && cleared.includes('updateCheck'), 'toggle off -> update alarm cleared');
+	assert(armed.usageHeartbeat, 'toggle off leaves the usage heartbeat alone');
+
+	assert(/register\('checkForUpdatesNow', \(\) => runUpdateCheck\(\)\)/.test(bgSrc),
+		'manual check calls runUpdateCheck directly (ignores the toggle and staleness)');
+	assert(/register\('getUpdateStatus'[\s\S]{0,200}AUTO_UPDATE_CHECK_KEY, true\)/.test(bgSrc),
+		'automatic checking defaults to on');
+	assert(/UPDATE_CHECK_ALARM\) \{\s*await runScheduledUpdateCheck\(\)/.test(bgSrc),
+		'the update alarm goes through the toggle-aware runScheduledUpdateCheck');
+}
+
+// ─── 14. Every string the settings card shows is localized everywhere ───────
+console.log('\n=== 14. settings_card.js localize() keys exist in all locales ===');
+{
+	const cardSrc = fs.readFileSync(path.join(rootDir, 'content-components', 'settings_card.js'), 'utf8');
+	const keys = new Set([...cardSrc.matchAll(/localize\('([a-z_.]+)'/g)].map(m => m[1]));
+	// settings.update_how_${platform}
+	['mac', 'windows', 'other'].forEach(p => keys.add('settings.update_how_' + p));
+	assert(keys.size > 30, 'found the settings card\'s localize() keys (' + keys.size + ')');
+	for (const file of [path.join('shared', 'localization.js'), path.join('content-components', 'localization.js')]) {
+		const messages = loadMessages(path.join(rootDir, file));
+		const missing = [];
+		for (const locale of SUPPORTED_LOCALES) {
+			for (const key of keys) if (messages[locale]?.[key] === undefined) missing.push(locale + ':' + key);
+		}
+		assert(missing.length === 0, file + ': every settings card key exists in all locales' + (missing.length ? ' (missing ' + missing.slice(0, 5).join(', ') + ')' : ''));
+	}
+	const en = loadMessages(path.join(rootDir, 'shared', 'localization.js')).en;
+	const sameKeys = SUPPORTED_LOCALES.every(l => Object.keys(loadMessages(path.join(rootDir, 'shared', 'localization.js'))[l]).length === Object.keys(en).length);
+	assert(sameKeys, 'every locale table has the same number of keys as English');
+}
+
+// ─── 15. Desktop regressions: sidebar anchor shapes, stale service worker ───
+console.log('\n=== 15. Desktop install / init regressions ===');
+{
+	const cu = fs.readFileSync(path.join(rootDir, 'content-components', 'content_utils.js'), 'utf8');
+	assert(!/sidebarAnchor\.parent\.(get|set)Attribute/.test(cu),
+		'initExtension does not assume sidebar anchors have .parent (the { insertAfter } shape crashed init)');
+	const initBlock = cu.match(/if \(sidebarAnchor\) \{([\s\S]*?)break;\s*\}/)?.[1];
+	assert(!!initBlock, 'found the sidebar marking block in initExtension');
+	if (initBlock) {
+		// eslint-disable-next-line no-new-func
+		const runBlock = new Function('sidebarAnchor', 'Log',
+			'"use strict"; return (async function(){ ' + initBlock + ' return "continued"; })();');
+		const el = () => { const a = {}; return { getAttribute: k => a[k] ?? null, setAttribute: (k, v) => { a[k] = String(v); } }; };
+		const parentEl = el();
+		assert(await runBlock({ insertAfter: { parentElement: parentEl } }, async () => {}) === 'continued'
+			&& parentEl.getAttribute('data-script-loaded') === 'true',
+			'{ insertAfter } anchor: init continues and marks the insertAfter parent');
+		assert(await runBlock({ insertAfter: { parentElement: parentEl } }, async () => {}) === undefined,
+			'a second instance on the same parent stops as a duplicate');
+		const p2 = el();
+		assert(await runBlock({ parent: p2, referenceNode: null }, async () => {}) === 'continued'
+			&& p2.getAttribute('data-script-loaded') === 'true', '{ parent } anchor still works');
+	}
+	for (const name of ['chat', 'home', 'code', 'incognitoConversation', 'desktopChat', 'desktopHome']) {
+		assert(new RegExp('\\n\\t' + name + ': \\{').test(cu), `page layout '${name}' is present`);
+	}
+
+	const inj = fs.readFileSync(path.join(rootDir, 'desktop-injector.js'), 'utf8');
+	assert(/function clearServiceWorkerCache\(\)/.test(inj), 'desktop-injector.js defines clearServiceWorkerCache()');
+	for (const cmd of ['cmdInstall', 'cmdPatch', 'cmdUnpatch']) {
+		const body = inj.match(new RegExp('function ' + cmd + '\\([^)]*\\) \\{([\\s\\S]*?)\\n\\}'))?.[1] || '';
+		assert(body.includes('clearServiceWorkerCache()'), `${cmd} clears the cached service worker`);
+	}
+	assert(/'Service Worker'/.test(inj) && !/rmSync\([^)]*Local Extension Settings/.test(inj),
+		'only the service worker cache is cleared, never chrome.storage (Local Extension Settings)');
+}
+
+// ─── 16. Live stream update applies weekly on the free plan ─────────────────
+console.log('\n=== 16. handleSsePartialUsage(): free plan weekly goes live ===');
+{
+	const { UsageData, UsageUI, sandbox } = createUsageUISandbox();
+	// The real guard from sse_bridge.js, with the tolerance CONFIG provides
+	sandbox.CONFIG.SSE_SAME_WINDOW_TOLERANCE_MS = 60000;
+	const bridgeSrc = fs.readFileSync(path.join(rootDir, 'content-components', 'sse_bridge.js'), 'utf8');
+	sandbox.shouldApplySseSession = vm.runInContext('(' + bridgeSrc.match(/function shouldApplySseSession[\s\S]*?\n\}/)[0] + ')', sandbox);
+
+	const make = (tier) => {
+		const ui = new UsageUI();
+		let renders = 0;
+		ui.uiReady = true;
+		ui.renderAll = () => { renders++; };
+		ui.state.usageData = UsageData.fromAPIResponse({ limits: [] }, tier);
+		return { ui, renders: () => renders };
+	};
+	const resetsAt = Date.now() + 3600000;
+
+	const free = make('claude_free');
+	free.ui.handleSsePartialUsage({ session: { percentage: 12, resetsAt }, weekly: { percentage: 30, resetsAt: resetsAt + 86400000 } });
+	assert(free.ui.state.usageData.limits.session?.percentage === 12, 'free: session from the stream applies live');
+	assert(free.ui.state.usageData.limits.weekly?.percentage === 30, 'free: weekly from the stream applies live (no background round trip)');
+	assert(free.renders() === 1, 'free: one re-render for both');
+	free.ui.handleSsePartialUsage({ session: null, weekly: { percentage: 29, resetsAt: resetsAt + 86400000 } });
+	assert(free.ui.state.usageData.limits.weekly.percentage === 30, 'free: a one-point dip in the same window is ignored');
+
+	const paid = make('claude_pro');
+	paid.ui.handleSsePartialUsage({ session: { percentage: 12, resetsAt }, weekly: { percentage: 30, resetsAt } });
+	assert(paid.ui.state.usageData.limits.session?.percentage === 12, 'paid: session still applies live');
+	assert(!paid.ui.state.usageData.limits.weekly, 'paid: weekly keeps coming from /usage only');
+
+	const bridge = fs.readFileSync(path.join(rootDir, 'content-components', 'sse_bridge.js'), 'utf8');
+	assert(/listener\(\{ session, weekly \}\)/.test(bridge), 'sse_bridge passes both windows to listeners');
+}
+
+// ─── 17. Mac re-sign keeps Cowork's virtualization entitlement ─────────────
+console.log('\n=== 17. signMac() restores entitlements (Cowork) ===');
+{
+	const inj = fs.readFileSync(path.join(rootDir, 'desktop-injector.js'), 'utf8');
+	const grab = (name) => inj.match(new RegExp('const ' + name + ' = [\\s\\S]*?;\\n'))?.[0];
+	// eslint-disable-next-line no-new-func
+	const env = new Function(grab('RESTRICTED_ENTITLEMENT') + grab('DEVICE_ENTITLEMENTS') + grab('DEFAULT_ENTITLEMENTS') +
+		inj.match(/function withoutRestricted[\s\S]*?\n\}/)[0] + '\nreturn { RESTRICTED_ENTITLEMENT, DEFAULT_ENTITLEMENTS, withoutRestricted };')();
+
+	const official = {
+		'keychain-access-groups': ['Q6L2SF6YDW.com.anthropic.claude.webauthn'],
+		'com.apple.application-identifier': 'Q6L2SF6YDW.com.anthropic.claudefordesktop',
+		'com.apple.developer.team-identifier': 'Q6L2SF6YDW',
+		'com.apple.security.virtualization': true,
+		'com.apple.security.cs.allow-jit': true
+	};
+	const kept = env.withoutRestricted(official);
+	assert(kept['com.apple.security.virtualization'] === true && kept['com.apple.security.cs.allow-jit'] === true,
+		'non-restricted entitlements (virtualization, allow-jit) are kept');
+	assert(!('keychain-access-groups' in kept) && !('com.apple.application-identifier' in kept) && !('com.apple.developer.team-identifier' in kept),
+		'restricted entitlements (macOS kills ad-hoc apps claiming them) are dropped');
+	assert(env.DEFAULT_ENTITLEMENTS[''].hasOwnProperty('com.apple.security.virtualization')
+		&& env.DEFAULT_ENTITLEMENTS['Claude Helper.app'].hasOwnProperty('com.apple.security.virtualization'),
+		'fallback for already-stripped installs restores virtualization on the app and Claude Helper');
+	assert(Object.values(env.DEFAULT_ENTITLEMENTS).every(e => Object.keys(e).every(k => !env.RESTRICTED_ENTITLEMENT(k))),
+		'fallback entitlements contain nothing restricted');
+
+	const body = inj.match(/function signMac\(appPath\) \{([\s\S]*?)\n\}/)?.[1] || '';
+	const readAt = body.indexOf('readEntitlements(codePath)');
+	const deepAt = body.indexOf("'--deep'");
+	assert(readAt !== -1 && deepAt !== -1 && readAt < deepAt, 'entitlements are read before the bundle is re-signed');
+	assert(/signWithEntitlements\(codePath, entitlements\)/.test(body), 'each component is re-signed with its entitlements');
+	assert(/\{ name: '', codePath: appPath \}\]/.test(body), 'the main app is signed last (after its helpers)');
 }
 
 	// ─── Summary ─────────────────────────────────────────────────────────────────

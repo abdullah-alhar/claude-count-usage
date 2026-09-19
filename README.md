@@ -1,7 +1,7 @@
 # Claude Count Usage
 
 
-**Claude Count Usage** is a minimal, open-source **Claude usage tracker** — a browser extension and desktop patch for Claude.ai that surfaces the two stats people actually want to see: how much of your session and weekly usage you've used, and what the current reply cost. No promos, no donate buttons, no bloat.
+**Claude Count Usage** is a minimal, open-source **Claude usage tracker** — a patch for the Claude Desktop app that surfaces the two stats people actually want to see: how much of your session and weekly usage you've used, and what the current reply cost. No promos, no donate buttons, no bloat.
 
 Created by [Abdullah Alhar](https://github.com/abdullah-alhar).
 
@@ -69,9 +69,9 @@ To remove it, run **`uninstall.bat`** — this fully uninstalls Claude Desktop r
 
 *(Optional)* Run **`create-shortcuts.bat`** once afterward to generate desktop shortcuts with proper custom icons instead of the default script icon.
 
-### Chrome
+### Updating
 
-Load the extension via `chrome://extensions` → **Load unpacked** → select the repo folder. (Chrome Web Store listing coming later.)
+The tracker checks this repo's [latest release](https://github.com/abdullah-alhar/claude-count-usage/releases/latest) every 12 hours (turn this off under **Settings → Updates**, or use **Check for updates now**). To update, download the new installer for your platform from the release and run it again — **Install.app** / **`install.command`** on Mac, **Install.exe** / **`install.bat`** on Windows.
 
 ---
 
@@ -82,12 +82,15 @@ Load the extension via `chrome://extensions` → **Load unpacked** → select th
 | Session (5h) usage bar | ✅ |
 | Weekly usage bar | ✅ |
 | Top-bar token / cost / cache stats | ✅ |
+| Blue / orange / red severity colors (70% / 90%) | ✅ |
+| Background refresh while idle (every 2 min) | ✅ |
+| Update check against GitHub releases | ✅ |
 
 ---
 
 ## How it works
 
-The extension reads Claude's own API traffic locally — nothing is sent to an external server.
+The tracker reads Claude's own API traffic locally — your usage data is never sent to an external server.
 
 ```
 Claude API
@@ -114,11 +117,12 @@ On Claude Desktop, there's no plugin API to hook into, so the installer patches 
 
 ## Privacy
 
-No data leaves your device.
+None of your usage or conversation data leaves your device.
 
 - Message text is never stored or transmitted — only a token count (an integer) is computed
 - Tokenization happens locally using the o200k tokenizer
-- No analytics, no telemetry, no third-party requests
+- No analytics, no telemetry
+- The only request outside claude.ai is the optional update check to GitHub's public releases API
 
 See [PRIVACY.md](PRIVACY.md) for full details.
 

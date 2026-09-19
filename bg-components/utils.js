@@ -50,12 +50,15 @@ const CONFIG = {
 	// updateUsage arrives). Matches the claude_free row, which is where an unresolvable
 	// tier already degrades to.
 	"DEFAULT_MODEL_VERSION": "claude-sonnet-5",
+	// Severity tiers for usage colors: blue below CAUTION, orange from CAUTION, red from WARNING.
 	"WARNING_THRESHOLD": 0.9,
+	"CAUTION_THRESHOLD": 0.7,
 	"PEAK_SESSION_MULTIPLIER": 1.5,
 	"WARNING": {
-		"PERCENT_THRESHOLD": 0.9,
 		"LENGTH": 50000,
-		"COST": 250000
+		"COST": 250000,
+		// Red below this many estimated messages left; orange from 3x this (see content_utils.js).
+		"MESSAGES_LEFT": 15
 	},
 	"BASE_SYSTEM_PROMPT_LENGTH": 3200,
 	"CACHING_MULTIPLIER": 0, // Seems to be free.
@@ -138,7 +141,6 @@ function fillEstimatedCaps(caps) {
 
 CONFIG.ESTIMATED_CAPS = fillEstimatedCaps(CONFIG.ESTIMATED_CAPS);
 
-const isElectron = chrome.action === undefined || navigator.userAgent.includes("Electron");
 const FORCE_DEBUG = true; // Set to true to force debug mode
 
 setStorageValue('force_debug', FORCE_DEBUG);
@@ -442,7 +444,6 @@ class MessageHandlerRegistry {
 const messageRegistry = new MessageHandlerRegistry();
 export {
 	CONFIG,
-	isElectron,
 	sleep,
 	RawLog,
 	FORCE_DEBUG,

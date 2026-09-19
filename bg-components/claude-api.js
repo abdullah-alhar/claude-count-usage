@@ -348,7 +348,7 @@ class ClaudeAPI {
 	}
 
 	// Cached because this is a GET *plus* a countText on a ~2k-token block that changes maybe
-	// monthly, and countText is a network round trip to api.anthropic.com whenever an API key is
+	// monthly, and countText used to be a network round trip to api.anthropic.com whenever an API key was
 	// configured. Uncached that is a fetch and a round trip on every authoritative pass, i.e. every
 	// message. (An earlier comment claimed it existed to absorb "the burst of calls per message" —
 	// there is no burst; the pass runs once.)
@@ -553,27 +553,6 @@ class MessageAPI {
 
 	async getFileTokens() {
 		const filePromises = (this.data.files_v2 || []).map(async (file) => {
-			const tokenCountingAPIKey = await tokenCounter.getApiKey();
-			if (tokenCountingAPIKey) {
-				try {
-					const fileUrl = file.file_kind === "image" ?
-						file.preview_asset.url :
-						file.document_asset.url;
-
-					const fileInfo = await this.getUploadedFileAsBase64(fileUrl);
-					if (fileInfo?.data) {
-						return await tokenCounter.getNonTextFileTokens(
-							fileInfo.data,
-							fileInfo.media_type,
-							file,
-							this.api.orgId
-						);
-					}
-				} catch (error) {
-					await Log("error", "Failed to fetch file content:", error);
-				}
-			}
-			// Fallback to estimation
 			return await tokenCounter.getNonTextFileTokens(null, null, file, this.api.orgId);
 		});
 

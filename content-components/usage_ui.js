@@ -1,6 +1,6 @@
 /* global CONFIG, Log, ProgressBar, sendBackgroundMessage, getActiveOrgId,
    setupTooltip, getTooltipPortal, getResetTimeHTML, sleep, isMobileView, isCodePage, UsageData, isPeakHours,
-   RED_WARNING, BLUE_HIGHLIGHT, SUCCESS_GREEN, SELECTORS, LayoutManager, mountToAnchor,
+   RED_WARNING, BLUE_HIGHLIGHT, SUCCESS_GREEN, getSeverityColor, SELECTORS, LayoutManager, mountToAnchor,
    localize, fmtNum, localeForIntl, onSsePartialUsage, shouldApplySseSession,
    SIDEBAR_DISPLAY_KEY, getSidebarDisplayPrefs, isSidebarItemVisible */
 'use strict';
@@ -13,6 +13,17 @@
 const EXPIRY_GRACE_MS = 10 * 1000;			// how far past the reset before client fallback asks
 const EXPIRY_RETRY_BASE_MS = 30 * 1000;		// first retry delay, doubling per attempt
 const EXPIRY_RETRY_MAX_MS = 5 * 60 * 1000;	// ceiling for that backoff
+
+// The free plan's windows only exist while the completion stream says so: /usage reports nothing,
+// and a window whose reset time has passed stays gone until the next message starts a new one.
+// There is nothing to wait for or refresh in that state, so it is shown as "starts with your next
+// message" rather than "Resetting..." (which never cleared) or an empty box.
+const FREE_PLAN_WINDOWS = ['session', 'weekly'];
+
+function isFreeWindowWaiting(usageData, limit) {
+	if (usageData?.subscriptionTier !== 'claude_free') return false;
+	return !limit || !!(limit.resetsAt && limit.resetsAt <= Date.now());
+}
 
 // Usage section with multiple limit bars
 class UsageSection {
@@ -120,12 +131,33 @@ class UsageSection {
 				progressBar.tooltip.textContent = localize('usage.tooltip_pct_used', { pct: limit.percentage.toFixed(0) });
 			}
 
+			if (isFreeWindowWaiting(usageData, limit)) {
+				this.renderWaitingRow(barElements);
+				continue;
+			}
+
 			const isResetting = limit.resetsAt && limit.resetsAt <= Date.now();
-			const color = isResetting ? SUCCESS_GREEN : (limit.percentage >= CONFIG.WARNING_THRESHOLD * 100 ? RED_WARNING : BLUE_HIGHLIGHT);
+			const color = isResetting ? SUCCESS_GREEN : getSeverityColor(limit.percentage);
 			percentage.textContent = isResetting ? '—' : `${limit.percentage.toFixed(0)}%`;
 			percentage.style.color = color;
 
 			resetTime.innerHTML = this.formatResetTime(limit.resetsAt);
+		}
+
+		// Free plan: always show both windows. One that isn't running (never started, or reset)
+		// gets a row saying the next message starts it, instead of silently disappearing.
+		if (usageData.subscriptionTier === 'claude_free' && !usageData.isLoadError()) {
+			for (const key of FREE_PLAN_WINDOWS) {
+				if (seenKeys.has(key) || this.hiddenKeys.has(key)) continue;
+				seenKeys.add(key);
+				let barElements = this.limitBars.get(key);
+				if (!barElements) {
+					barElements = this.createLimitBar(key);
+					this.limitBars.set(key, barElements);
+					barsContainer.appendChild(barElements.row);
+				}
+				this.renderWaitingRow(barElements);
+			}
 		}
 
 		// Extra usage bar (shown whenever extra usage is set up, even before limits are maxed —
@@ -151,7 +183,7 @@ class UsageSection {
 			const totalDollars = (effectiveTotal / 100).toFixed(2);
 			progressBar.tooltip.textContent = localize('usage.tooltip_dollars', { used: usedDollars, total: totalDollars });
 
-			const color = pct >= CONFIG.WARNING_THRESHOLD * 100 ? RED_WARNING : BLUE_HIGHLIGHT;
+			const color = getSeverityColor(pct);
 			percentage.textContent = `${pct.toFixed(0)}%`;
 			percentage.style.color = color;
 
@@ -181,8 +213,18 @@ class UsageSection {
 	// Keyed off hasNoReportedUsage() rather than "no rows were drawn": switching every bar off in
 	// settings also empties the container, and that user must not be told the server reports
 	// nothing. Appended last so it can never land between bars.
+	renderWaitingRow({ percentage, resetTime, progressBar }) {
+		progressBar.updateProgress(0, 100);
+		progressBar.tooltip.textContent = localize('usage.starts_next_message');
+		percentage.textContent = '—';
+		percentage.style.color = '';
+		resetTime.textContent = localize('usage.starts_next_message');
+	}
+
 	renderNotice(usageData) {
-		if (!usageData.hasNoReportedUsage()) {
+		// The free plan's waiting rows (see render) already say what is going on.
+		const freeRowsShown = usageData.subscriptionTier === 'claude_free' && !usageData.isLoadError();
+		if (!usageData.hasNoReportedUsage() || freeRowsShown) {
 			if (this.notice) {
 				this.notice.remove();
 				this.notice = null;
@@ -256,6 +298,10 @@ class UsageSection {
 		for (const limit of usageData.getActiveLimits()) {
 			const barElements = this.limitBars.get(limit.key);
 			if (barElements) {
+				if (isFreeWindowWaiting(usageData, limit)) {
+					this.renderWaitingRow(barElements);
+					continue;
+				}
 				const isResetting = limit.resetsAt && limit.resetsAt <= Date.now();
 				barElements.resetTime.innerHTML = this.formatResetTime(limit.resetsAt);
 				if (isResetting) {
@@ -648,7 +694,7 @@ class UsageUI {
 		// Returning here without touching the DOM would leave whatever was last written on screen:
 		// that is how a free account ended up showing a stale "Session: 2%" - set by an SSE partial
 		// a moment earlier - next to "Reset in: Not set". Hide the usage half outright instead.
-		const session = usageData.limits.session;
+		const session = isFreeWindowWaiting(usageData, usageData.limits.session) ? null : usageData.limits.session;
 		const hasUsage = !!session || usageData.isSpendingCredits(modelName);
 		this.setChatUsageVisible(hasUsage);
 		if (!hasUsage) return;
@@ -661,7 +707,7 @@ class UsageUI {
 			const used = usageData.extraUsage.usedCredits;
 			const pct = effectiveTotal > 0 ? (used / effectiveTotal) * 100 : 0;
 
-			const color = pct >= CONFIG.WARNING_THRESHOLD * 100 ? RED_WARNING : BLUE_HIGHLIGHT;
+			const color = getSeverityColor(pct);
 			usageDisplay.innerHTML = `${localize('usage.extra_inline')} <span class="ut-statline-pct" style="color: ${color}">${pct.toFixed(0)}%</span>`;
 			peakIndicator.style.display = 'none';
 
@@ -682,7 +728,7 @@ class UsageUI {
 
 		// Normal session display
 		const isResetting = session.resetsAt && session.resetsAt <= Date.now();
-		const color = isResetting ? SUCCESS_GREEN : (session.percentage >= CONFIG.WARNING_THRESHOLD * 100 ? RED_WARNING : BLUE_HIGHLIGHT);
+		const color = isResetting ? SUCCESS_GREEN : getSeverityColor(session.percentage);
 		const pctText = isResetting ? localize('common.resetting') : `${session.percentage.toFixed(0)}%`;
 		usageDisplay.innerHTML = `${localize('usage.session_inline')} <span class="ut-statline-pct" style="color: ${color}">${pctText}</span>`;
 		peakIndicator.style.display = isPeakHours() ? '' : 'none';
@@ -729,6 +775,10 @@ class UsageUI {
 		// writing "Reset in: Not set" into the display renderChatArea() hid.
 		const session = usageData.limits.session;
 		if (!session) return;
+		if (isFreeWindowWaiting(usageData, session)) {
+			this.setChatUsageVisible(false);
+			return;
+		}
 		const resetInfo = usageData.getSessionResetInfo();
 		this.elements.chat.resetDisplay.innerHTML = getResetTimeHTML(resetInfo);
 
@@ -754,12 +804,22 @@ class UsageUI {
 	// Session usage read straight off the completion stream, about a second ahead of the full
 	// fetch. Overwrites the one field it knows and leaves everything else alone; if no usage has
 	// arrived yet there is nothing to overwrite, so we just wait for the full fetch.
-	handleSsePartialUsage({ session }) {
+	// On the free plan the stream is the only source for the weekly window too, so it is applied
+	// here as well instead of waiting for the background round trip (up to the post-stream
+	// cooldown). Paid plans keep taking weekly from /usage, which the stream's 7d can differ from.
+	handleSsePartialUsage({ session, weekly }) {
 		if (!this.uiReady || !this.state.usageData) return;
-		if (!shouldApplySseSession(this.state.usageData.limits.session, session)) return;
-
-		this.state.usageData.limits.session = session;
-		this.renderAll();
+		const limits = this.state.usageData.limits;
+		let changed = false;
+		if (session && shouldApplySseSession(limits.session, session)) {
+			limits.session = session;
+			changed = true;
+		}
+		if (weekly && this.state.usageData.subscriptionTier === 'claude_free' && shouldApplySseSession(limits.weekly, weekly)) {
+			limits.weekly = weekly;
+			changed = true;
+		}
+		if (changed) this.renderAll();
 	}
 
 	// ========== CHECKS ==========

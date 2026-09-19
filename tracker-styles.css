@@ -345,87 +345,324 @@
 
 /* ── Settings Card ────────────────────────────────────────── */
 
+/* Theme-dependent surfaces and text come from claude.ai's own utility classes (bg-bg-100,
+   text-text-*) set in settings_card.js. Hairlines and tints are mixed from currentColor, so they
+   follow the light/dark theme without depending on how claude.ai formats its CSS variables.
+   The accent colors mirror the constants in content_utils.js. */
 .ut-settings-card {
+    --ut-blue: #2c84db;
+    --ut-orange: #dd6b0a;
+    --ut-red: #de2929;
+    --ut-green: #22c55e;
+    --ut-hairline: color-mix(in srgb, currentColor 13%, transparent);
+    --ut-fill: color-mix(in srgb, currentColor 4%, transparent);
+    --ut-fill-hover: color-mix(in srgb, currentColor 9%, transparent);
+
     position: fixed;
-    width: 240px;
-    padding: 10px;
-    border-radius: 10px;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+    display: flex;
+    flex-direction: column;
+    width: 316px;
+    max-width: calc(100vw - 16px);
+    max-height: calc(100vh - 16px);
+    border-radius: 14px;
+    border: 1px solid var(--ut-hairline);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18), 0 2px 6px rgba(0, 0, 0, 0.08);
     z-index: 100000;
     font-size: 13px;
-    border: 1px solid var(--border-400, #3a3a3a);
+    line-height: 1.4;
+    overflow: hidden;
+    animation: ut-settings-in 140ms cubic-bezier(0.165, 0.85, 0.45, 1);
+}
+
+@keyframes ut-settings-in {
+    from { opacity: 0; transform: translateY(-4px) scale(0.985); }
+    to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .ut-settings-card { animation: none; }
 }
 
 .ut-settings-header {
     display: flex;
-    justify-content: space-between;
     align-items: center;
-    margin-bottom: 6px;
+    gap: 8px;
+    padding: 12px 12px 10px 16px;
+    border-bottom: 1px solid var(--ut-hairline);
+    user-select: none;
+}
+
+.ut-settings-title {
+    font-size: 14px;
+    font-weight: 600;
+    margin: 0;
+}
+
+.ut-settings-version {
+    flex: 1;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
 }
 
 .ut-settings-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border-radius: 7px;
     background: none;
-    border: none;
-    font-size: 18px;
-    line-height: 1;
-    cursor: pointer;
-    padding: 0 2px;
-    color: var(--text-400);
 }
 
 .ut-settings-close:hover {
-    color: var(--text-100);
+    background: var(--ut-fill-hover);
 }
 
-.ut-settings-separator {
-    height: 1px;
-    background: var(--border-400, #3a3a3a);
-    margin: 6px -10px;
+.ut-settings-body {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 4px 12px 14px;
 }
 
 .ut-settings-section {
-    padding: 8px 0 4px 0;
+    margin-top: 12px;
 }
 
-.ut-settings-label {
-    display: block;
-    margin-bottom: 4px;
+.ut-settings-section-title {
+    margin: 0 4px 6px;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    user-select: none;
+}
+
+.ut-settings-group {
+    border: 1px solid var(--ut-hairline);
+    border-radius: 10px;
+    background: var(--ut-fill);
+}
+
+.ut-settings-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 12px;
+    border-top: 1px solid var(--ut-hairline);
+}
+
+.ut-settings-group > :first-child {
+    border-top: none;
+}
+
+.ut-settings-row-split {
+    justify-content: space-between;
+}
+
+.ut-settings-row-stack {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+}
+
+/* A note that belongs to the row above it: no divider, tucked up. */
+.ut-settings-row-note {
+    border-top: none;
+    padding-top: 0;
+    margin-top: -4px;
+}
+
+.ut-settings-row-disabled {
+    opacity: 0.5;
+}
+
+.ut-settings-row-label {
+    font-size: 12.5px;
     font-weight: 500;
+}
+
+.ut-settings-hint {
+    font-size: 11.5px;
+    line-height: 1.35;
+}
+
+.ut-settings-inline-status {
+    padding: 0 12px 9px;
+    font-size: 11.5px;
+}
+
+/* Switch */
+.ut-settings-switch-row {
+    position: relative;
+    justify-content: space-between;
+    cursor: pointer;
+}
+
+.ut-switch-input {
+    position: absolute;
+    opacity: 0;
+    width: 1px;
+    height: 1px;
+    pointer-events: none;
+}
+
+.ut-switch {
+    position: relative;
+    flex: none;
+    width: 32px;
+    height: 18px;
+    border-radius: 999px;
+    background: color-mix(in srgb, currentColor 22%, transparent);
+    transition: background-color 160ms ease;
+}
+
+.ut-switch::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+    transition: transform 160ms cubic-bezier(0.165, 0.85, 0.45, 1);
+}
+
+.ut-switch-input:checked + .ut-switch {
+    background: var(--ut-blue);
+}
+
+.ut-switch-input:checked + .ut-switch::after {
+    transform: translateX(14px);
+}
+
+.ut-switch-input:focus-visible + .ut-switch {
+    outline: 2px solid var(--ut-blue);
+    outline-offset: 2px;
+}
+
+/* Buttons */
+.ut-settings-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    flex: none;
+    padding: 5px 11px;
+    border-radius: 7px;
+    font-size: 11.5px;
+    font-weight: 500;
+    line-height: 1.3;
+    white-space: nowrap;
+    text-decoration: none;
+}
+
+.ut-settings-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.ut-settings-btn:focus-visible,
+.ut-settings-link:focus-visible {
+    outline: 2px solid var(--ut-blue);
+    outline-offset: 1px;
+}
+
+.ut-settings-btn-secondary {
+    background: transparent;
+    border: 1px solid var(--ut-hairline);
+    color: inherit;
+}
+
+.ut-settings-btn-secondary:hover:not(:disabled) {
+    background: var(--ut-fill-hover);
+}
+
+.ut-settings-btn-primary {
+    background: var(--ut-blue);
+    border: 1px solid var(--ut-blue);
+    color: #fff;
+}
+
+.ut-settings-btn-primary:hover:not(:disabled) {
+    background: #2575c4;
+    border-color: #2575c4;
+}
+
+.ut-settings-icon-btn {
+    padding: 5px 7px;
+}
+
+/* Kept for the refresh button's own states (see tests/settings-and-coldstart.test.js). */
+.ut-settings-refresh-btn:hover {
+    background: var(--ut-fill-hover);
+}
+
+.ut-settings-refresh-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.ut-settings-refresh-status {
+    line-height: 1.3;
+}
+
+.ut-settings-link {
+    font-size: 11.5px;
+    color: var(--ut-blue);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+/* Inputs */
+.ut-settings-input {
+    border: 1px solid var(--ut-hairline);
+    border-radius: 7px;
+    outline: none;
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.ut-settings-input:focus {
+    border-color: var(--ut-blue);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--ut-blue) 20%, transparent);
+}
+
+.ut-settings-input:disabled {
+    cursor: not-allowed;
 }
 
 .ut-settings-input-row {
     display: flex;
-    gap: 4px;
-    margin-bottom: 6px;
+    gap: 6px;
 }
 
 .ut-settings-api-input {
     flex: 1;
+    min-width: 0;
     padding: 5px 8px;
-    border: 1px solid var(--border-400, #3a3a3a);
-    border-radius: 6px;
-    outline: none;
-    font-family: monospace;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 11px;
-    transition: border-color 0.2s;
 }
 
-.ut-settings-api-input:focus {
-    border-color: #2c84db;
+.ut-settings-number-wrap {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
 }
 
-.ut-settings-vis-toggle {
-    background: none;
-    border: 1px solid var(--border-400, #3a3a3a);
-    border-radius: 6px;
+.ut-settings-number {
+    width: 52px;
+    padding: 4px 6px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.ut-settings-select {
+    max-width: 150px;
     padding: 4px 6px;
     cursor: pointer;
-    display: flex;
-    align-items: center;
-}
-
-.ut-settings-vis-toggle:hover {
-    background: var(--bg-300, #333);
 }
 
 .ut-settings-action-row {
@@ -436,81 +673,105 @@
 
 .ut-settings-status {
     flex: 1;
+    min-width: 0;
     font-size: 11px;
 }
 
-.ut-settings-save-btn {
-    background: #2c84db;
-    color: #fff;
-    padding: 4px 10px;
-    border-radius: 6px;
-    font-size: 11px;
-}
-
-.ut-settings-save-btn:hover {
-    background: #2575c4;
-}
-
-.ut-settings-save-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-}
-
-.ut-settings-clear-btn {
-    background: none;
-    border: 1px solid var(--border-400, #3a3a3a);
-    padding: 4px 8px;
-    border-radius: 6px;
-    font-size: 11px;
-}
-
-.ut-settings-clear-btn:hover {
-    background: var(--bg-300, #333);
-}
-
-.ut-settings-refresh-btn {
-    background: none;
-    border: 1px solid var(--border-400, #3a3a3a);
-    padding: 2px 8px;
-    border-radius: 6px;
-    font-size: 11px;
-    cursor: pointer;
-    line-height: 1.4;
-}
-
-.ut-settings-refresh-btn:hover {
-    background: var(--bg-300, #333);
-}
-
-.ut-settings-refresh-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-}
-
-.ut-settings-refresh-status {
-    font-size: 11px;
-    line-height: 1.3;
-}
-
+/* Visible bars */
 .ut-settings-checkbox-list {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 2px;
 }
 
 .ut-settings-checkbox-row {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
     cursor: pointer;
     padding: 2px 0;
 }
 
 .ut-settings-checkbox {
-    accent-color: #2c84db;
+    accent-color: var(--ut-blue);
     cursor: pointer;
     width: 14px;
     height: 14px;
+}
+
+/* Color legend */
+.ut-settings-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    font-size: 11.5px;
+}
+
+.ut-settings-legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.ut-settings-legend-swatch {
+    width: 14px;
+    height: 6px;
+    border-radius: 3px;
+}
+
+/* Updates */
+.ut-settings-update-callout {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px;
+    border-radius: 8px;
+    border: 1px solid color-mix(in srgb, var(--ut-blue) 35%, transparent);
+    background: color-mix(in srgb, var(--ut-blue) 9%, transparent);
+}
+
+.ut-settings-update-callout-title {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--ut-blue);
+}
+
+.ut-settings-update-versions {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 15px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+.ut-settings-update-arrow {
+    opacity: 0.6;
+}
+
+.ut-settings-update-links {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+/* Debug logs */
+.ut-settings-log-view {
+    max-height: 180px;
+    margin: 0;
+    padding: 8px;
+    overflow: auto;
+    border: 1px solid var(--ut-hairline);
+    border-radius: 7px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10.5px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    word-break: break-word;
+    user-select: text;
 }
 
 /* ── Estimate indicator ───────────────────────────────────── */

@@ -6,7 +6,41 @@
 const isElectron = typeof navigator !== 'undefined' && (navigator.userAgent.includes("Electron") || typeof window.electron !== 'undefined');
 const BLUE_HIGHLIGHT = "#2c84db";
 const RED_WARNING = "#de2929";
+// Amber picked to sit in the same contrast band as BLUE_HIGHLIGHT on both claude.ai themes
+// (~3.2:1 on the light background, ~3.9:1+ on the dark one) while staying clearly apart from red.
+// Mirrored as --ut-orange in tracker-styles.css.
+const ORANGE_WARNING = "#dd6b0a";
+// SUCCESS_GREEN means "resetting / cached / done" and is deliberately not part of the severity scale.
 const SUCCESS_GREEN = "#22c55e";
+
+// Single source of truth for threshold colors. percentage is 0-100.
+function getSeverityColor(percentage) {
+	const red = (CONFIG?.WARNING_THRESHOLD ?? 0.9) * 100;
+	const orange = (CONFIG?.CAUTION_THRESHOLD ?? 0.7) * 100;
+	if (percentage >= red) return RED_WARNING;
+	if (percentage >= orange) return ORANGE_WARNING;
+	return BLUE_HIGHLIGHT;
+}
+
+// For absolute limits (length, cost): scales value so that redAt lands exactly on the red tier.
+function getSeverityColorForLimit(value, redAt) {
+	if (!(redAt > 0)) return BLUE_HIGHLIGHT;
+	return getSeverityColor((value / redAt) * (CONFIG?.WARNING_THRESHOLD ?? 0.9) * 100);
+}
+
+// For a count that runs down (messages left): red below redBelow. Orange starts where the same
+// ratio as the percentage tiers puts it - with 70%/90% that is 3x redBelow - so no second magic
+// number is needed.
+function getSeverityColorForRemaining(remaining, redBelow) {
+	if (!(redBelow > 0)) return BLUE_HIGHLIGHT;
+	const red = CONFIG?.WARNING_THRESHOLD ?? 0.9;
+	const orange = CONFIG?.CAUTION_THRESHOLD ?? 0.7;
+	// Rounded: (1 - 0.7) / (1 - 0.9) is 3.0000000000000004 in floating point.
+	const orangeBelow = redBelow * Math.round(((1 - orange) / (1 - red)) * 1000) / 1000;
+	if (remaining < redBelow) return RED_WARNING;
+	if (remaining < orangeBelow) return ORANGE_WARNING;
+	return BLUE_HIGHLIGHT;
+}
 
 const SELECTORS = {
 	MODEL_PICKER: '[data-testid="model-selector-dropdown"]',
@@ -16,28 +50,28 @@ const SELECTORS = {
 	VERIF_LOGIN_SCREEN: 'input[data-testid="code"]'
 };
 // Dynamic debug setting - will be loaded from storage
-let FORCE_DEBUG = true;
-// Load FORCE_DEBUG from storage and set up error handlers
+let FORCE_DEBUG = false;
+
+// Error handlers are registered synchronously so they're active from the start of page load,
+// before the async storage read below resolves.
+window.addEventListener('error', async function (event) {
+	await logError(event.error);
+
+});
+
+window.addEventListener('unhandledrejection', async function (event) {
+	await logError(event.reason);
+
+});
+
+self.onerror = async function (message, source, lineno, colno, error) {
+	await logError(error);
+	return false;
+};
+
+// Load FORCE_DEBUG from storage
 browser.storage.local.get('force_debug').then(result => {
 	FORCE_DEBUG = result.force_debug || false;
-
-	// Set up error logging based on debug setting
-	if (!FORCE_DEBUG) {
-		window.addEventListener('error', async function (event) {
-			await logError(event.error);
-
-		});
-
-		window.addEventListener('unhandledrejection', async function (event) {
-			await logError(event.reason);
-
-		});
-
-		self.onerror = async function (message, source, lineno, colno, error) {
-			await logError(error);
-			return false;
-		};
-	}
 });
 
 // Global variables that will be shared across all content scripts
@@ -198,29 +232,6 @@ async function sendBackgroundMessage(message) {
 		counter--;
 	}
 	throw new Error("Failed to send message to background script after 10 retries.");
-}
-
-// Encode bytes as base64 (chunked to avoid stack overflow on large file downloads). Used to ship
-// proxyFetch response bodies back to the background, which rebuilds a Response from them.
-function bytesToBase64(buffer) {
-	const bytes = new Uint8Array(buffer);
-	let binary = '';
-	const chunk = 0x8000;
-	for (let i = 0; i < bytes.length; i += chunk) {
-		binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
-	}
-	return btoa(binary);
-}
-
-// Brave hides containers from extension APIs, so the background can't read this container's cookies.
-// Tell it whether we're on Brave; if so, it proxies claude.ai fetches back through this tab.
-async function reportBraveStatus() {
-	try {
-		const isBrave = !!(navigator.brave && typeof navigator.brave.isBrave === 'function' && await navigator.brave.isBrave());
-		await sendBackgroundMessage({ type: 'reportBrave', isBrave });
-	} catch (e) {
-		await Log("warn", "Brave detection failed:", e);
-	}
 }
 
 async function waitForElement(target, selector, maxTime = 1000) {
@@ -505,7 +516,7 @@ class ProgressBar {
 	updateProgress(total, maxTokens) {
 		const percentage = (total / maxTokens) * 100;
 		this.bar.style.width = `${Math.min(percentage, 100)}%`;
-		this.bar.style.background = total >= maxTokens * CONFIG.WARNING.PERCENT_THRESHOLD ? RED_WARNING : BLUE_HIGHLIGHT;
+		this.bar.style.background = getSeverityColor(percentage);
 		this.tooltip.textContent = localize('usage.bar_credits', { used: fmtNum(total), total: fmtNum(maxTokens), pct: percentage.toFixed(1) });
 	}
 
@@ -544,17 +555,6 @@ browser.runtime.onMessage.addListener(async (message) => {
 	}
 	if (message.action === "getOrgID") {
 		return Promise.resolve({ orgId: getActiveOrgId() });
-	}
-	if (message.type === 'proxyFetch') {
-		// Brave: perform a fetch in this tab's container context and ship the result to the background.
-		try {
-			const r = await fetch(message.url, { ...(message.options || {}), credentials: 'include' });
-			const buf = await r.arrayBuffer();
-			return { ok: r.ok, status: r.status, statusText: r.statusText, body: bytesToBase64(buf) };
-		} catch (e) {
-			await Log("error", "proxyFetch failed:", message.url, e);
-			return { ok: false, status: 0, statusText: String(e), body: '' };
-		}
 	}
 });
 
@@ -1051,7 +1051,10 @@ function getTitleAreaAnchor() {
 }
 
 const pageLayouts = {
-	// Desktop client layouts (checked first — matches if dframe classes or isElectron)
+	// Desktop client layouts (checked first — matches if dframe classes or isElectron).
+	// The web layouts below are NOT dead in the desktop-only build: isElectron is a user-agent /
+	// window.electron test that may be false inside Claude Desktop's page, in which case these
+	// layouts are what actually run there. Verify in the app before removing any of them.
 	desktopChat: {
 		match() {
 			return (!!document.querySelector('aside.dframe-sidebar') || isElectron)
@@ -1276,10 +1279,6 @@ async function initExtension() {
 	}
 	window.claudeTrackerInstance = true;
 
-	// Report Brave status before any ClaudeAPI-backed call (e.g. getAccountLocale below) so the
-	// background knows to proxy claude.ai fetches through this tab's container.
-	await reportBraveStatus();
-
 	// Clean up any leftover UI elements from a previous instance (e.g. extension toggled off/on)
 	document.querySelectorAll('[class^="ut-"], [class*=" ut-"]').forEach(el => el.remove());
 	const oldStyles = document.getElementById('ut-styles');
@@ -1326,11 +1325,15 @@ async function initExtension() {
 		}
 
 		if (sidebarAnchor) {
-			if (sidebarAnchor.parent.getAttribute('data-script-loaded')) {
+			// Anchors come as { parent, referenceNode } or as { insertAfter } (the "under Customize"
+			// spot); mark whichever container we mount into. Reading .parent unconditionally threw on
+			// the second shape, which aborted init before requestData and left the usage bars empty.
+			const mountParent = sidebarAnchor.parent || sidebarAnchor.insertAfter?.parentElement || null;
+			if (mountParent?.getAttribute('data-script-loaded')) {
 				await Log('Script already running, stopping duplicate');
 				return;
 			}
-			sidebarAnchor.parent.setAttribute('data-script-loaded', true);
+			mountParent?.setAttribute('data-script-loaded', true);
 			break;
 		}
 

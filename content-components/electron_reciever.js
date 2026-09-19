@@ -1,10 +1,7 @@
 'use strict';
 
-// Set up Electron event listeners if we're in Electron
+// Bridges Claude Desktop's main process (alarms, window focus) and the fetch monkeypatch to the background.
 async function initElectronReceiver() {
-	const isElectron = await browser.runtime.sendMessage({ type: 'isElectron' });
-	if (!isElectron) return;
-
 	console.log('Electron receiver initializing...');
 
 	// Get monkeypatch patterns for request interception
@@ -60,6 +57,9 @@ async function initElectronReceiver() {
 			details: event.detail
 		});
 	});
+
+	// Lets the background re-arm main-process alarms (lost on app restart) and refresh stale usage.
+	browser.runtime.sendMessage({ type: 'electronPageReady' }).catch(() => {});
 
 	console.log('Electron receiver initialized');
 }

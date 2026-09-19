@@ -77,7 +77,7 @@ if not exist "%SCRIPT_DIR%\manifest_electron.json" (
     )
     echo [OK] Downloaded latest extension files from GitHub
 ) else (
-    echo [OK] Using local extension files from: %SCRIPT_DIR%
+    echo [OK] Using local extension files from: !SCRIPT_DIR!
 )
 
 :: ── 3. Configure manifest and dataclasses ───────────────────────
@@ -113,7 +113,7 @@ if errorlevel 1 (
     echo.
     echo [ERROR] Installation failed.
     echo If Claude Desktop is still open, please close it completely
-    echo from Task Manager (Ctrl+Shift+Esc) and try again.
+    echo from Task Manager ^(Ctrl+Shift+Esc^) and try again.
     echo.
     pause
     exit /b 1
