@@ -584,6 +584,47 @@ const fs = require('fs');
 
 const EXTENSION_DIR = path.join(process.resourcesPath, 'injected-extension');
 
+// ── Startup timing log ──
+// One line per startup milestone in <Claude logs>/ccu-startup.log (on Windows usually
+// %LOCALAPPDATA%\\Claude\\logs, on macOS ~/Library/Logs/Claude). Claude's own logs don't show
+// when the window got content or why it stayed black, and that is the first thing needed
+// when someone reports a slow start. Lines before app-ready are buffered (logs path not final yet).
+// Measured from the OS process creation time where Electron provides it, so time spent before any
+// JS runs (antivirus scanning the patched, no longer signed exe, slow disk) shows up as the
+// offset of "wrapper loaded".
+const startupT0 = (typeof process.getCreationTime === 'function' && process.getCreationTime()) || (Date.now() - Math.round(process.uptime() * 1000));
+const STARTUP_WATCH_MS = 3 * 60 * 1000;
+let startupLogPath = null;
+const startupBuffer = [];
+function appendStartupLine(line) {
+  try { fs.appendFileSync(startupLogPath, line + '\\n'); } catch {}
+}
+function startupLog(event, detail) {
+  if (Date.now() - startupT0 > STARTUP_WATCH_MS && !/gone|unresponsive|fail/.test(event)) return;
+  const line = '+' + (Date.now() - startupT0) + 'ms ' + event + (detail ? ' ' + detail : '');
+  if (startupLogPath) appendStartupLine(line); else startupBuffer.push(line);
+}
+startupLog('wrapper loaded');
+app.whenReady().then(() => {
+  try {
+    const dir = app.getPath('logs');
+    fs.mkdirSync(dir, { recursive: true });
+    startupLogPath = path.join(dir, 'ccu-startup.log');
+    try { if (fs.statSync(startupLogPath).size > 256 * 1024) fs.renameSync(startupLogPath, startupLogPath + '.old'); } catch {}
+    appendStartupLine('==== ' + new Date(startupT0).toISOString() + ' Claude ' + app.getVersion() + ' ' + process.platform + '/' + process.arch +
+      ' windowsStore=' + !!process.windowsStore + ' exe=' + process.execPath);
+    startupBuffer.splice(0).forEach(appendStartupLine);
+  } catch {}
+  startupLog('app ready');
+});
+app.on('child-process-gone', (_e, d) => startupLog('child-process-gone', d.type + ' reason=' + d.reason + ' exit=' + d.exitCode + (d.name ? ' name=' + d.name : '')));
+app.on('render-process-gone', (_e, _wc, d) => startupLog('render-process-gone', 'reason=' + d.reason + ' exit=' + d.exitCode));
+app.on('browser-window-created', (_e, win) => {
+  startupLog('window created');
+  win.on('unresponsive', () => startupLog('window unresponsive'));
+  win.on('responsive', () => startupLog('window responsive again'));
+});
+
 // ── Extension loader: defaultSession, plus any other session that shows claude.ai ──
 // claude.ai normally renders in defaultSession, but if Claude Desktop ever moves
 // it to its own partition the content scripts must follow it there. Other
@@ -597,11 +638,17 @@ const isClaudeUrl = (url) => /^https:\\/\\/([a-z0-9-]+\\.)*claude\\.ai(\\/|$)/i.
 async function loadIntoSession(sess) {
   if (!sess || loadedSessions.has(sess)) return;
   loadedSessions.add(sess);
+  const started = Date.now();
   try {
-    await sess.loadExtension(EXTENSION_DIR, { allowFileAccess: true });
+    // session.loadExtension is deprecated in current Electron and will be removed; Claude
+    // updates its Electron on its own schedule, so prefer the replacement when it exists.
+    const loader = sess.extensions && typeof sess.extensions.loadExtension === 'function' ? sess.extensions : sess;
+    await loader.loadExtension(EXTENSION_DIR, { allowFileAccess: true });
     console.log('[CCU] Extension loaded into session');
+    startupLog('extension loaded', 'in ' + (Date.now() - started) + 'ms');
   } catch (err) {
     console.error('[CCU] Failed to load extension into session:', err);
+    startupLog('extension load failed', String(err && err.message || err));
   }
 }
 
@@ -729,11 +776,32 @@ app.on('web-contents-created', (event, contents) => {
     if (isClaudeUrl(url) || (url && url.includes('localhost'))) {
       claudeWebContents = contents;
       setupPolyfills();
+      watchClaudeLoad(contents, url);
     }
   };
   contents.on('did-start-navigation', (_ev, url) => check(url || ''));
   contents.once('dom-ready', () => check(contents.getURL()));
 });
+
+// Logs the claude.ai view's load milestones: the gap between "window created" and
+// "claude.ai loaded" is the black screen the user sees.
+function watchClaudeLoad(contents, firstUrl) {
+  const short = (u) => String(u || '').split('?')[0].slice(0, 80);
+  startupLog('claude.ai navigation', short(firstUrl));
+  contents.once('dom-ready', () => startupLog('claude.ai dom-ready', short(contents.getURL())));
+  contents.once('did-finish-load', () => {
+    startupLog('claude.ai loaded', short(contents.getURL()));
+    // When each helper process (GPU, renderers, utilities - all the same exe) was started. Late
+    // starts point at the exe being scanned on every launch rather than at the page itself.
+    try {
+      const procs = app.getAppMetrics().map((m) => m.type + '@+' + Math.max(0, Math.round(m.creationTime - startupT0)) + 'ms');
+      startupLog('processes', procs.join(' '));
+    } catch {}
+  });
+  contents.on('did-fail-load', (_e, code, desc, url, isMainFrame) => {
+    if (isMainFrame) startupLog('claude.ai load failed', code + ' ' + desc + ' ' + short(url));
+  });
+}
 
 app.whenReady().then(loadExtensionEverywhere);
 
@@ -1051,6 +1119,11 @@ function shouldIgnoreExtensionEntry(name) {
 
   // Version control, dependency, and build scratch folders
   if (lower === '.git' || lower === '.github' || lower === 'node_modules') return true;
+
+  // Repo-only folders and installer icons: never loaded by the extension, just more files for
+  // Claude to carry and for antivirus to scan
+  if (lower === 'tests' || lower === 'scripts' || lower === 'assets') return true;
+  if (lower.endsWith('.icns') || lower.endsWith('.ico')) return true;
 
   // macOS app bundles (e.g. Install.app, Uninstall.app with Icon\r)
   if (lower.endsWith('.app')) return true;

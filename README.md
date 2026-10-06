@@ -75,6 +75,8 @@ The tracker checks this repo's [latest release](https://github.com/abdullah-alha
 
 **Black screen for 30+ seconds when opening Claude (Mac)?** macOS is asking whether Claude may use **"Claude Safe Storage"** in your keychain, and the prompt is often hidden behind Claude's window. Find the prompt, enter your Mac password and click **Always Allow**. Since v1.4 this is needed once; earlier versions asked again after every install.
 
+**Slow start or black screen on Windows?** Since v1.4 every launch writes a timing log to `%LOCALAPPDATA%\Claude\logs\ccu-startup.log` (if it isn't there, check `%APPDATA%\Claude\logs`). Please attach that file and `main.log` from the same folder when you report it. The log shows where the time went: before the app started at all, before the window opened, or while claude.ai loaded. Note that patching changes `claude.exe`, so it is no longer signed by Anthropic, and antivirus software may scan it more thoroughly than the official build.
+
 ---
 
 ## Features
