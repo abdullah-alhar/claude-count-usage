@@ -109,6 +109,12 @@ if [ ! -d "$CLAUDE_APP" ] && [ -d "$HOME/Applications/Claude.app" ]; then
 fi
 
 if [ -d "$CLAUDE_APP" ]; then
+  echo ""
+  echo -e "${BOLD}One-time step:${NC} when Claude starts, macOS may ask to let Claude use"
+  echo "  \"Claude Safe Storage\" in your keychain. Enter your Mac password and click"
+  echo -e "  ${BOLD}Always Allow${NC}. Until it is answered Claude stays on a black screen, and the"
+  echo "  prompt can open behind Claude's window. Future updates will not ask again."
+  echo ""
   xattr -cr "$CLAUDE_APP" 2>/dev/null || true
   open -a "$CLAUDE_APP"
   log "Claude Desktop launched"

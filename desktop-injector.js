@@ -584,12 +584,15 @@ const fs = require('fs');
 
 const EXTENSION_DIR = path.join(process.resourcesPath, 'injected-extension');
 
-// ── Extension loader: inject into EVERY session, not just defaultSession ──
-// Claude Desktop renders claude.ai inside a WebContentsView that uses its
-// own session/partition. An extension loaded only into defaultSession will
-// never get its content scripts injected into that view. We track which
-// sessions we've already loaded into via a WeakSet to avoid duplicates.
+// ── Extension loader: defaultSession, plus any other session that shows claude.ai ──
+// claude.ai normally renders in defaultSession, but if Claude Desktop ever moves
+// it to its own partition the content scripts must follow it there. Other
+// partitions (Cowork file previews, launch previews, ...) never show claude.ai,
+// and loading the extension into them starts another copy of its background
+// worker for nothing, so a session only gets it once one of its pages
+// navigates to claude.ai. A WeakSet avoids loading twice into one session.
 const loadedSessions = new WeakSet();
+const isClaudeUrl = (url) => /^https:\\/\\/([a-z0-9-]+\\.)*claude\\.ai(\\/|$)/i.test(url || '');
 
 async function loadIntoSession(sess) {
   if (!sess || loadedSessions.has(sess)) return;
@@ -607,14 +610,15 @@ async function loadExtensionEverywhere() {
     console.log('[CCU] No extension folder found at', EXTENSION_DIR);
     return;
   }
-  // Load into default session first
   await loadIntoSession(session.defaultSession);
-  // Load into every existing WebContents' session
-  for (const wc of webContents.getAllWebContents()) {
-    await loadIntoSession(wc.session);
-  }
-  // Load into any future WebContents' sessions
-  app.on('web-contents-created', (_event, wc) => loadIntoSession(wc.session));
+  const followClaude = (wc) => {
+    if (isClaudeUrl(wc.getURL())) loadIntoSession(wc.session);
+    wc.on('did-start-navigation', (ev, url) => {
+      if (isClaudeUrl(typeof url === 'string' ? url : ev && ev.url)) loadIntoSession(wc.session);
+    });
+  };
+  for (const wc of webContents.getAllWebContents()) followClaude(wc);
+  app.on('web-contents-created', (_event, wc) => followClaude(wc));
   console.log('[CCU] Claude Count Usage extension loaded from', EXTENSION_DIR);
 }
 
@@ -710,9 +714,11 @@ app.on('browser-window-created', (event, win) => {
 });
 
 app.on('web-contents-created', (event, contents) => {
+  // Relay only the tracker's own lines. Matching anything containing "Error" echoed most of
+  // claude.ai's console into the main process during startup.
   contents.on('console-message', (ev, level, message) => {
     const text = typeof message === 'string' ? message : (typeof level === 'string' ? level : ((ev && ev.message) || ''));
-    if (text.includes('[CCU]') || text.includes('UsageTracker') || text.includes('Last-resort') || text.includes('Count Usage') || text.includes('[SIDEBAR DIAG') || text.includes('Error') || text.startsWith('CUT_')) {
+    if (text.startsWith('[CCU]') || text.startsWith('[UsageTracker]')) {
       console.log('[Renderer]', text);
     }
   });
@@ -720,7 +726,7 @@ app.on('web-contents-created', (event, contents) => {
   if (claudeWebContents) return;
   const check = (url) => {
     if (claudeWebContents) return;
-    if (url && (url.includes('claude.ai') || url.includes('localhost'))) {
+    if (isClaudeUrl(url) || (url && url.includes('localhost'))) {
       claudeWebContents = contents;
       setupPolyfills();
     }
@@ -1485,14 +1491,30 @@ function withoutRestricted(entitlements) {
   return out;
 }
 
-function signWithEntitlements(codePath, entitlements) {
+function signWithEntitlements(codePath, entitlements, requirement = null) {
   const tmpJson = path.join(os.tmpdir(), `ccu-ent-${process.pid}-${Date.now()}.plist`);
   try {
     fs.writeFileSync(tmpJson, JSON.stringify(entitlements));
     execFileSync('plutil', ['-convert', 'xml1', tmpJson]);
-    execFileSync('codesign', ['--force', '--sign', '-', '--entitlements', tmpJson, codePath], { stdio: 'inherit' });
+    const reqArgs = requirement ? ['-r', requirement] : [];
+    execFileSync('codesign', ['--force', '--sign', '-', ...reqArgs, '--entitlements', tmpJson, codePath], { stdio: 'inherit' });
   } finally {
     try { fs.rmSync(tmpJson, { force: true }); } catch {}
+  }
+}
+
+// Claude keeps its cookie/session encryption key in the login keychain ("Claude Safe Storage") and
+// reads it on the main thread at startup. The keychain only hands it over silently to code matching
+// the requirement it trusted. An ad-hoc signature's default requirement is its cdhash, which changes
+// on every install, so after each install macOS put up an access prompt on launch - frequently behind
+// the window - and Claude sat on a black screen until someone found and answered it. Pinning the
+// requirement to the bundle identifier makes one "Always Allow" survive later installs and updates.
+function stableDesignatedRequirement(appPath) {
+  try {
+    const id = execFileSync('/usr/libexec/PlistBuddy', ['-c', 'Print :CFBundleIdentifier', path.join(appPath, 'Contents', 'Info.plist')], { encoding: 'utf8' }).trim();
+    return /^[A-Za-z0-9.-]+$/.test(id) ? `=designated => identifier "${id}"` : null;
+  } catch {
+    return null;
   }
 }
 
@@ -1526,16 +1548,28 @@ function signMac(appPath) {
     console.warn('codesign notice:', e.message);
   }
 
-  // Helpers first, main app last: the outer signature seals the nested ones.
+  // Helpers first, main app last: the outer signature seals the nested ones. The main app is always
+  // re-signed here, even with no entitlements, so it gets the stable keychain requirement.
+  const mainRequirement = stableDesignatedRequirement(appPath);
   for (const { name, codePath, source, entitlements } of plan) {
-    if (!Object.keys(entitlements).length) continue;
+    const isMain = name === '';
+    if (!Object.keys(entitlements).length && !isMain) continue;
     try {
-      signWithEntitlements(codePath, entitlements);
+      signWithEntitlements(codePath, entitlements, isMain ? mainRequirement : null);
       console.log(`Restored ${Object.keys(entitlements).length} entitlements on ${name || path.basename(appPath)} (from ${source})`);
     } catch (e) {
       console.warn(`[Warning] Could not restore entitlements on ${name || path.basename(appPath)}: ${e.message}`);
     }
   }
+
+  try {
+    const dr = execFileSync('codesign', ['-d', '-r-', appPath], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+    if (/designated => identifier /.test(dr)) {
+      console.log('Verified: stable signing requirement set (keychain access survives future updates).');
+    } else {
+      console.warn('[Warning] Signing requirement is not stable - macOS may ask for keychain access after each update.');
+    }
+  } catch {}
 
   const finalEntitlements = readEntitlements(appPath) || {};
   if (finalEntitlements['com.apple.security.virtualization']) {

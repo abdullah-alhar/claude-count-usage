@@ -59,7 +59,9 @@ async function initElectronReceiver() {
 	});
 
 	// Lets the background re-arm main-process alarms (lost on app restart) and refresh stale usage.
-	browser.runtime.sendMessage({ type: 'electronPageReady' }).catch(() => {});
+	// That refresh and the update check are network requests, so hold them until claude.ai has
+	// finished booting rather than competing with its own startup requests.
+	waitForPageSettled().then(() => browser.runtime.sendMessage({ type: 'electronPageReady' })).catch(() => {});
 
 	console.log('Electron receiver initialized');
 }

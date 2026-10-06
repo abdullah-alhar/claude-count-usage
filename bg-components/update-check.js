@@ -46,6 +46,8 @@ export function detectPlatform(userAgent) {
 export function buildUpdateStatus(release, currentVersion, platform, now) {
 	const latestVersion = String(release?.tag_name || release?.name || '').replace(/^v/i, '') || null;
 	if (!latestVersion) throw new Error('Release has no version tag');
+	// A tag like "New" compares as 0.0.0, which would silently report "up to date" forever.
+	if (versionParts(latestVersion).length === 0) throw new Error(`Latest release tag "${latestVersion}" is not a version number`);
 	return {
 		currentVersion,
 		latestVersion,

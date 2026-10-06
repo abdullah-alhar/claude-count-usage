@@ -73,6 +73,8 @@ To remove it, run **`uninstall.bat`** — this fully uninstalls Claude Desktop r
 
 The tracker checks this repo's [latest release](https://github.com/abdullah-alhar/claude-count-usage/releases/latest) every 12 hours (turn this off under **Settings → Updates**, or use **Check for updates now**). To update, download the new installer for your platform from the release and run it again — **Install.app** / **`install.command`** on Mac, **Install.exe** / **`install.bat`** on Windows.
 
+**Black screen for 30+ seconds when opening Claude (Mac)?** macOS is asking whether Claude may use **"Claude Safe Storage"** in your keychain, and the prompt is often hidden behind Claude's window. Find the prompt, enter your Mac password and click **Always Allow**. Since v1.4 this is needed once; earlier versions asked again after every install.
+
 ---
 
 ## Features

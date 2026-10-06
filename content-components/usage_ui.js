@@ -896,15 +896,24 @@ class UsageUI {
 	startUpdateLoop() {
 		// Debounced mount — only re-insert elements when the DOM actually
 		// needs it, not on every tick. Prevents the up/down glitch.
+		// Also rate-limited: the observer fires on every DOM change, and while claude.ai is
+		// rendering that is every frame. Each mount walks the sidebar and reads layout, so running
+		// it per frame slowed the page's own rendering. A quiet page still re-mounts on the next frame.
+		const MIN_MOUNT_GAP_MS = 150;
 		let mountPending = false;
+		let lastMountAt = 0;
 		const scheduledMount = () => {
 			if (mountPending) return;
 			mountPending = true;
-			requestAnimationFrame(() => {
+			const mount = () => requestAnimationFrame(() => {
 				mountPending = false;
+				lastMountAt = Date.now();
 				this.mountSidebar();
 				this.mountChatArea();
 			});
+			const wait = MIN_MOUNT_GAP_MS - (Date.now() - lastMountAt);
+			if (wait > 0) setTimeout(mount, wait);
+			else mount();
 		};
 
 		// Watch for layout shifts so we can re-anchor after Claude re-renders

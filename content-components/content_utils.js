@@ -188,6 +188,33 @@ async function logError(error) {
 // Utility functions
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+// Resolves once claude.ai has finished loading and its main thread has gone idle. Content scripts
+// start at document_idle, which on Claude Desktop is while the app is still booting behind a black
+// window; anything heavy done then (DOM scans, forced layouts, background fetches) competes with
+// that boot and stretches the black screen. timeoutMs caps the wait on a page that never idles.
+let pageSettledPromise = null;
+function waitForPageSettled(timeoutMs = 8000) {
+	if (pageSettledPromise) return pageSettledPromise;
+	pageSettledPromise = new Promise(resolve => {
+		const deadline = Date.now() + timeoutMs;
+		const whenIdle = () => {
+			const remaining = Math.max(0, deadline - Date.now());
+			if (typeof requestIdleCallback === 'function') {
+				requestIdleCallback(() => resolve(), { timeout: remaining });
+			} else {
+				setTimeout(resolve, Math.min(remaining, 500));
+			}
+		};
+		if (document.readyState === 'complete') {
+			whenIdle();
+		} else {
+			window.addEventListener('load', whenIdle, { once: true });
+			setTimeout(resolve, timeoutMs);
+		}
+	});
+	return pageSettledPromise;
+}
+
 function isIncognitoConversation() {
 	return new URLSearchParams(window.location.search).has('incognito');
 }
@@ -884,13 +911,26 @@ function getLastResortSidebarAnchor() {
 		}
 	}
 
-	console.log('[CCU] Last-resort sidebar detection also failed.');
+	// This runs on every mount attempt until the sidebar renders (many times a second during boot),
+	// so only say it once per page.
+	if (!lastResortFailureLogged) {
+		lastResortFailureLogged = true;
+		console.log('[CCU] Last-resort sidebar detection also failed.');
+	}
 	return null;
 }
+let lastResortFailureLogged = false;
 
-// Dump DOM info to the debug log when sidebar can't be found
+// Dump DOM info to the debug log when sidebar can't be found. Called from every failed anchor
+// lookup, which happens continuously while the page is still rendering, so it is rate-limited:
+// each dump is several storage round-trips plus full-document queries.
+const SIDEBAR_DIAG_INTERVAL_MS = 60_000;
+let lastSidebarDiagAt = 0;
 function dumpSidebarDiagnostics(source) {
 	if (typeof Log !== 'function') return;
+	const now = Date.now();
+	if (now - lastSidebarDiagAt < SIDEBAR_DIAG_INTERVAL_MS) return;
+	lastSidebarDiagAt = now;
 
 	const checks = {
 		'aside.dframe-sidebar': !!document.querySelector('aside.dframe-sidebar'),
@@ -1278,6 +1318,9 @@ async function initExtension() {
 		return;
 	}
 	window.claudeTrackerInstance = true;
+
+	// Let claude.ai finish booting before touching the DOM or asking the background for anything.
+	await waitForPageSettled();
 
 	// Clean up any leftover UI elements from a previous instance (e.g. extension toggled off/on)
 	document.querySelectorAll('[class^="ut-"], [class*=" ut-"]').forEach(el => el.remove());

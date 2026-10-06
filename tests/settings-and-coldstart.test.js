@@ -1039,6 +1039,12 @@ console.log('\n=== 12. update-check.js ===');
 	const thrown = await uc.checkForUpdates({ fetchImpl: async () => { throw new Error('offline'); }, currentVersion: '1.3', platform: 'mac', now: 1, ...throwStore });
 	assert(thrown.error === 'offline' && !thrown.updateAvailable, 'network error with no history -> error, no update claimed');
 
+	const namedStore = makeStore();
+	const namedFetch = async () => ({ ok: true, status: 200, json: async () => ({ tag_name: 'New', assets: [] }) });
+	const named = await uc.checkForUpdates({ fetchImpl: namedFetch, currentVersion: '1.3', platform: 'mac', now: 1, ...namedStore });
+	assert(named.error && named.error.includes('not a version number') && !named.updateAvailable,
+		'a non-numeric release tag is reported as a failed check, not as "up to date"');
+
 	assert(uc.isStatusStale(null, 0) === true, 'no stored result is stale');
 	assert(uc.isStatusStale({ checkedAt: 1000 }, 1000 + uc.UPDATE_CHECK_INTERVAL_MS - 1) === false, 'result inside the interval is fresh');
 	assert(uc.isStatusStale({ checkedAt: 1000 }, 1000 + uc.UPDATE_CHECK_INTERVAL_MS) === true, 'result at the interval is stale');
@@ -1230,8 +1236,26 @@ console.log('\n=== 17. signMac() restores entitlements (Cowork) ===');
 	const readAt = body.indexOf('readEntitlements(codePath)');
 	const deepAt = body.indexOf("'--deep'");
 	assert(readAt !== -1 && deepAt !== -1 && readAt < deepAt, 'entitlements are read before the bundle is re-signed');
-	assert(/signWithEntitlements\(codePath, entitlements\)/.test(body), 'each component is re-signed with its entitlements');
+	assert(/signWithEntitlements\(codePath, entitlements[,)]/.test(body), 'each component is re-signed with its entitlements');
 	assert(/\{ name: '', codePath: appPath \}\]/.test(body), 'the main app is signed last (after its helpers)');
+	assert(/signWithEntitlements\(codePath, entitlements, isMain \? mainRequirement : null\)/.test(body)
+		&& /=designated => identifier /.test(inj),
+		'the main app gets a bundle-identifier requirement, so keychain trust survives re-signing (no black-screen prompt per update)');
+}
+
+console.log('\n=== 18. Startup does not compete with claude.ai booting ===');
+{
+	const utils = fs.readFileSync(path.join(rootDir, 'content-components', 'content_utils.js'), 'utf8');
+	const init = utils.match(/async function initExtension\(\) \{([\s\S]*?)\n\}/)?.[1] || '';
+	assert(init.indexOf('await waitForPageSettled()') !== -1 && init.indexOf('await waitForPageSettled()') < init.indexOf('injectStyles()'),
+		'initExtension waits for the page to settle before touching the DOM');
+	assert(/now - lastSidebarDiagAt < SIDEBAR_DIAG_INTERVAL_MS\) return;/.test(utils),
+		'sidebar diagnostics are rate-limited (they ran on every mount attempt while the page rendered)');
+	const receiver = fs.readFileSync(path.join(rootDir, 'content-components', 'electron_reciever.js'), 'utf8');
+	assert(/waitForPageSettled\(\)\.then\(\(\) => browser\.runtime\.sendMessage\(\{ type: 'electronPageReady' \}\)\)/.test(receiver),
+		'electronPageReady (usage fetch + update check) waits until the page has settled');
+	const usageUi = fs.readFileSync(path.join(rootDir, 'content-components', 'usage_ui.js'), 'utf8');
+	assert(/MIN_MOUNT_GAP_MS/.test(usageUi), 'sidebar re-mounts triggered by DOM mutations are rate-limited');
 }
 
 	// ─── Summary ─────────────────────────────────────────────────────────────────
