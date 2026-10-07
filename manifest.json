@@ -1,7 +1,7 @@
 {
 	"manifest_version": 3,
 	"name": "Claude Count Usage",
-	"version": "1.4",
+	"version": "1.5",
 	"description": "Track your Claude.ai session and weekly usage. Shows usage bars in sidebar and token/cost/cache stats in the chat header. No telemetry. All data stays on your device.",
 	"author": "Abdullah Alhar",
 	"background": {
@@ -54,7 +54,8 @@
 				"lib/browser-polyfill.min.js",
 				"lib/o200k_base.js",
 				"tracker-styles.css",
-				"injections/webrequest-polyfill.js"
+				"injections/webrequest-polyfill.js",
+				"injections/sse-watcher.js"
 			],
 			"matches": [
 				"<all_urls>"

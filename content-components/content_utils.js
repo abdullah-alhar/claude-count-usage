@@ -274,30 +274,36 @@ async function waitForElement(target, selector, maxTime = 1000) {
 	return null;
 }
 
-// subscriptionTier decides the default when the picker can't be read - claude.ai defaults
-// Max to Opus and everyone else to Sonnet. Pass null if the tier isn't known yet.
-async function getCurrentModel(maxWait = 3000, subscriptionTier = null) {
+// When the picker can't be read (it isn't always rendered, and claude.ai changes its markup without
+// notice), fall back to fallbackVersion - the model the conversation actually ran on, as
+// the background got it from the API - and only then to the plan default: claude.ai defaults Max to
+// Opus and everyone else to Sonnet. A wrong guess here prices the next message on the wrong model
+// and, because prompt caching is per model, also shows it at the full uncached price.
+// Pass null for subscriptionTier if it isn't known yet.
+async function getCurrentModel(maxWait = 3000, subscriptionTier = null, fallbackVersion = null) {
+	const fallback = () => modelFamilyFromVersion(fallbackVersion) || defaultModelForTier(subscriptionTier);
 	const modelSelector = await waitForElement(document, SELECTORS.MODEL_PICKER, maxWait);
-	if (!modelSelector) return defaultModelForTier(subscriptionTier);
+	if (!modelSelector) return fallback();
 
 	const fullModelName = modelSelector.querySelector('.whitespace-nowrap')?.textContent?.trim();
-	if (!fullModelName) return defaultModelForTier(subscriptionTier);
+	if (!fullModelName) return fallback();
 
 	const matchedModel = modelFamilyFromVersion(fullModelName);
 	if (matchedModel) return matchedModel;
 
 	await Log("Could not find matching model, returning default")
-	return defaultModelForTier(subscriptionTier);
+	return fallback();
 }
 
-async function getCurrentModelVersion(maxWait = 3000, subscriptionTier = null) {
+async function getCurrentModelVersion(maxWait = 3000, subscriptionTier = null, fallbackVersion = null) {
+	const fallback = () => fallbackVersion || defaultModelVersionForTier(subscriptionTier);
 	const modelSelector = await waitForElement(document, SELECTORS.MODEL_PICKER, maxWait);
-	if (!modelSelector) return defaultModelVersionForTier(subscriptionTier);
+	if (!modelSelector) return fallback();
 	const text = modelSelector.querySelector('.whitespace-nowrap')?.textContent?.trim();
-    if (!text) return defaultModelVersionForTier(subscriptionTier);
-    const normalizedText = text.toLowerCase();
-    const matchedModel = Object.keys(CONFIG.MODEL_VERSION_MAP).find(key => normalizedText.startsWith(key));
-	return matchedModel ? CONFIG.MODEL_VERSION_MAP[matchedModel] : defaultModelVersionForTier(subscriptionTier);
+	if (!text) return fallback();
+	const normalizedText = text.toLowerCase();
+	const matchedModel = Object.keys(CONFIG.MODEL_VERSION_MAP).find(key => normalizedText.startsWith(key));
+	return matchedModel ? CONFIG.MODEL_VERSION_MAP[matchedModel] : fallback();
 }
 
 function isMobileView() {

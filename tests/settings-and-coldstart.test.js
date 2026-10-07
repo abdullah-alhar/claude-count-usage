@@ -1258,6 +1258,89 @@ console.log('\n=== 18. Startup does not compete with claude.ai booting ===');
 	assert(/MIN_MOUNT_GAP_MS/.test(usageUi), 'sidebar re-mounts triggered by DOM mutations are rate-limited');
 }
 
+console.log('\n=== 19. Claude Desktop: Squirrel updates install instead of crashing Claude ===');
+{
+	const injector = fs.readFileSync(path.join(rootDir, 'desktop-injector.js'), 'utf8');
+	assert((injector.match(/'Resources', 'ShipIt'\)/g) || []).length === 1 && /function hasShipIt[^}]*'Resources', 'ShipIt'\)/.test(injector),
+		'the installer no longer deletes ShipIt (Squirrel launched it from the missing path and crashed the main process)');
+	const install = injector.match(/async function cmdInstall\(extensionDir\) \{([\s\S]*?)\n\}/)?.[1] || '';
+	assert(/!hasShipIt\(install\.appPath\)\) \{[\s\S]*?install = null;/.test(install),
+		'an install whose ShipIt an older version removed is replaced with a fresh official Claude');
+	const cleanup = injector.match(/function cleanupMacLeftovers\(appPath\) \{([\s\S]*?)\n\}/)?.[1] || '';
+	assert(cleanup && !/Squirrel\.framework/.test(cleanup), 'leftover cleanup leaves the Squirrel framework alone');
+	const wrapper = injector.slice(injector.indexOf('function generateWrapperSource'), injector.indexOf('// ─── Process & Lock Management'));
+	assert(/autoUpdater\.once\('update-downloaded'/.test(wrapper), 'the wrapper tells the user to re-run the installer once an update is downloaded');
+	assert(!/autoUpdater\.(checkForUpdates|quitAndInstall)\s*=/.test(wrapper), 'the wrapper does not disable Claude\'s own updater');
+}
+
+console.log('\n=== 20. Claude Desktop: the completion-stream watcher actually runs ===');
+{
+	const receiver = fs.readFileSync(path.join(rootDir, 'content-components', 'electron_reciever.js'), 'utf8');
+	assert(/injectPageScript\('injections\/sse-watcher\.js'\)/.test(receiver),
+		'electron_reciever injects sse-watcher.js into the page (Electron ignores the manifest\'s MAIN-world entry)');
+	for (const file of ['manifest.json', 'manifest_electron.json']) {
+		const manifest = JSON.parse(fs.readFileSync(path.join(rootDir, file), 'utf8'));
+		const resources = manifest.web_accessible_resources.flatMap(entry => entry.resources);
+		assert(resources.includes('injections/sse-watcher.js'), `${file} makes sse-watcher.js loadable from a page script tag`);
+	}
+
+	// Loaded by both the manifest entry and the script tag in a browser - fetch must be wrapped once.
+	const watcherSrc = fs.readFileSync(path.join(rootDir, 'injections', 'sse-watcher.js'), 'utf8');
+	const originalFetch = async () => ({});
+	const win = { fetch: originalFetch };
+	// eslint-disable-next-line no-new-func
+	const runWatcher = new Function('window', 'localStorage', watcherSrc);
+	runWatcher(win, { getItem: () => null });
+	const wrapped = win.fetch;
+	runWatcher(win, { getItem: () => null });
+	assert(wrapped !== originalFetch && win.fetch === wrapped, 'a second copy of the watcher does not wrap fetch again');
+}
+
+console.log('\n=== 21. Model detection prices the model the conversation really uses ===');
+{
+	const utilsSrc = fs.readFileSync(path.join(rootDir, 'bg-components', 'utils.js'), 'utf8');
+	// eslint-disable-next-line no-new-func
+	const MODEL_VERSION_MAP = new Function('return ' + utilsSrc.match(/"MODEL_VERSION_MAP": (\{[\s\S]*?\n\t\}),/)[1])();
+	const labels = Object.keys(MODEL_VERSION_MAP);
+	const shadowed = labels.filter((label, i) => labels.slice(0, i).some(earlier => label.startsWith(earlier)));
+	assert(shadowed.length === 0, 'no picker label is shadowed by a shorter one above it' + (shadowed.length ? ': ' + shadowed : ''));
+
+	const contentSrc = fs.readFileSync(path.join(rootDir, 'content-components', 'content_utils.js'), 'utf8');
+	const detection = contentSrc.slice(contentSrc.indexOf('async function getCurrentModel('), contentSrc.indexOf('function isMobileView()'));
+	const families = ['Fable', 'Opus', 'Sonnet', 'Haiku'];
+	const familyOf = (v) => families.find(f => (v || '').toLowerCase().includes(f.toLowerCase())) || null;
+	const defaultVersion = (tier) => (tier === 'claude_max_5x' ? 'claude-opus-5' : 'claude-sonnet-5');
+	const detect = (pickerText) => {
+		const picker = pickerText === null ? null : { querySelector: () => ({ textContent: pickerText }) };
+		// eslint-disable-next-line no-new-func
+		return new Function('document', 'waitForElement', 'SELECTORS', 'CONFIG', 'modelFamilyFromVersion', 'defaultModelForTier',
+			'defaultModelVersionForTier', 'Log', detection + '\nreturn { getCurrentModel, getCurrentModelVersion };')(
+			{}, async () => picker, { MODEL_PICKER: 'x' }, { MODEL_VERSION_MAP }, familyOf,
+			(tier) => familyOf(defaultVersion(tier)), defaultVersion, async () => {});
+	};
+
+	for (const [label, version] of [['Opus 5.5', 'claude-opus-5-5'], ['Sonnet 5.5', 'claude-sonnet-5-5'],
+		['Sonnet 5', 'claude-sonnet-5'], ['Fable 5.1', 'claude-fable-5-1'], ['Opus 5', 'claude-opus-5']]) {
+		assert(await detect(label).getCurrentModelVersion(0, 'claude_pro') === version, `picker "${label}" -> ${version} (matches what the API reports, so the cache check holds)`);
+	}
+	const noPicker = detect(null);
+	assert(await noPicker.getCurrentModelVersion(0, 'claude_pro', 'claude-opus-5-5') === 'claude-opus-5-5'
+		&& await noPicker.getCurrentModel(0, 'claude_pro', 'claude-opus-5-5') === 'Opus',
+		'unreadable picker -> the conversation\'s own model, not the plan default');
+	assert(await noPicker.getCurrentModelVersion(0, 'claude_free') === 'claude-sonnet-5' && await noPicker.getCurrentModel(0, 'claude_free') === 'Sonnet',
+		'unreadable picker on a new chat -> the plan default');
+	assert(await detect('Opus 5.5').getCurrentModelVersion(0, 'claude_pro', 'claude-sonnet-5') === 'claude-opus-5-5',
+		'a readable picker still wins (the user switched model for the next message)');
+
+	const bgSrc = fs.readFileSync(path.join(rootDir, 'background.js'), 'utf8');
+	const beforeRequest = bgSrc.match(/async function onBeforeRequestHandler\(details\) \{([\s\S]*?)\n\}/)?.[1] || '';
+	assert(/const modelVersion = requestBodyJSON\?\.model \|\| null;/.test(beforeRequest) && !/defaultModelVersionForTier/.test(beforeRequest),
+		'a completion that names no model is not recorded as the plan default (it overrode the API\'s real model: Opus priced as Sonnet)');
+	const pass = bgSrc.match(/async function runAuthoritativePass\([^)]*\) \{([\s\S]*?)\n\}/)?.[1] || '';
+	assert(/const model = pendingRequest\?\.model \|\| conversationData\.model \|\|/.test(pass) && pass.indexOf('const model =') > pass.indexOf('conversation.getInfo('),
+		'the authoritative pass falls back to the conversation\'s model from the API before the plan default');
+}
+
 	// ─── Summary ─────────────────────────────────────────────────────────────────
 	console.log('\n======================================================');
 	if (failedTests === 0) {

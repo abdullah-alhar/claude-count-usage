@@ -329,6 +329,16 @@ function isBundleHealthy(appPath) {
   return true;
 }
 
+// Squirrel's ShipIt is what installs a downloaded Claude update. Installers before v1.5 deleted it to
+// keep updates from replacing the patched app, but Squirrel still downloads and verifies each update
+// and then launches ShipIt from that missing path: the main process crashes with
+// "NSInvalidArgumentException ... insertObject:atIndex: object cannot be nil", i.e. Claude quits
+// mid-task. A bundle without it is reinstalled from Anthropic so updates install normally again.
+function hasShipIt(appPath) {
+  if (os.platform() !== 'darwin') return true;
+  return fs.existsSync(path.join(appPath, 'Contents', 'Frameworks', 'Squirrel.framework', 'Resources', 'ShipIt'));
+}
+
 function isZipComplete(filePath) {
   try {
     if (!fs.existsSync(filePath)) return false;
@@ -445,17 +455,6 @@ function installDownloadedClaude(filePath) {
     try {
       execFileSync('xattr', ['-cr', appDest], { stdio: 'ignore' });
     } catch {}
-
-    const shipItPath = path.join(appDest, 'Contents', 'Frameworks',
-      'Squirrel.framework', 'Resources', 'ShipIt');
-    try {
-      if (fs.existsSync(shipItPath)) {
-        fs.rmSync(shipItPath, { force: true });
-        console.log('Removed ShipIt to prevent Claude Desktop self-updates.');
-      }
-    } catch (e) {
-      console.warn('Could not remove ShipIt:', e.message);
-    }
 
     return appDest;
   }
@@ -804,6 +803,21 @@ function watchClaudeLoad(contents, firstUrl) {
 }
 
 app.whenReady().then(loadExtensionEverywhere);
+
+// A Claude update replaces this patched app with the official one, so the tracker is gone after the
+// restart that installs it. Say so once, so a missing usage bar isn't a mystery.
+try {
+  const { autoUpdater } = require('electron');
+  autoUpdater.once('update-downloaded', () => {
+    try {
+      if (!Notification.isSupported()) return;
+      new Notification({
+        title: 'Claude Count Usage',
+        body: 'Claude will update the next time it restarts. Run the Claude Count Usage installer again afterwards to bring back usage tracking.'
+      }).show();
+    } catch {}
+  });
+} catch {}
 
 // Boot original application
 require(${JSON.stringify(relativeMainPath)});
@@ -1657,27 +1671,13 @@ function signMac(appPath) {
   } catch {}
 }
 
-// ─── macOS Auto-Update Prevention & Stale LaunchAgent Cleanup ──
+// ─── macOS Leftover Cleanup ─────────────────────────────────
 
-function disableMacAutoUpdates(appPath) {
+function cleanupMacLeftovers(appPath) {
   if (os.platform() !== 'darwin') return;
 
-  // 1. Remove ShipIt from Squirrel.framework to prevent automatic self-updates from overwriting Claude.app on reboot
-  const possibleShipItPaths = [
-    path.join(appPath, 'Contents', 'Frameworks', 'Squirrel.framework', 'Resources', 'ShipIt'),
-    path.join(appPath, 'Contents', 'Frameworks', 'Squirrel.framework', 'Versions', 'A', 'Resources', 'ShipIt'),
-    path.join(appPath, 'Contents', 'Frameworks', 'Squirrel.framework', 'Versions', 'Current', 'Resources', 'ShipIt')
-  ];
-  for (const shipIt of possibleShipItPaths) {
-    try {
-      if (fs.existsSync(shipIt)) {
-        fs.rmSync(shipIt, { force: true });
-        console.log(`Removed ${path.basename(shipIt)} to protect Claude Desktop patch from self-updates.`);
-      }
-    } catch {}
-  }
-
-  // 2. Clear staged ShipIt update caches that could trigger an overwrite on reboot
+  // 1. Drop an update staged before this install: it was downloaded for the bundle being replaced
+  // (~380 MB), and Claude downloads a fresh one on its next update check anyway.
   const home = os.homedir();
   const shipItCacheDir = path.join(home, 'Library', 'Caches', 'com.anthropic.claudefordesktop.ShipIt');
   try {
@@ -1688,7 +1688,7 @@ function disableMacAutoUpdates(appPath) {
     }
   } catch {}
 
-  // 3. Remove obsolete LaunchAgents that previously ran legacy patch engines on reboot
+  // 2. Remove obsolete LaunchAgents that previously ran legacy patch engines on reboot
   const launchAgentsDir = path.join(home, 'Library', 'LaunchAgents');
   const obsoletePlists = [
     'com.abdullah.claude-count-usage.plist',
@@ -1821,6 +1821,11 @@ async function cmdInstall(extensionDir) {
     console.log('Detected corrupted or broken app bundle (broken framework symlinks).');
     console.log('Restoring clean official Claude Desktop bundle directly from Anthropic package...');
     install = null;
+  } else if (install && install.platform === 'darwin' && !hasShipIt(install.appPath)) {
+    console.log("Claude Desktop's updater (ShipIt) was removed by an older version of this installer,");
+    console.log('which makes Claude crash when it downloads an update. Reinstalling the latest official');
+    console.log('Claude Desktop from Anthropic (your chats and settings are kept)...');
+    install = null;
   }
 
   if (install && install.platform === 'win32' && install.protected) {
@@ -1866,7 +1871,7 @@ async function cmdInstall(extensionDir) {
   clearServiceWorkerCache();
 
   if (install.platform === 'darwin') {
-    disableMacAutoUpdates(install.appPath);
+    cleanupMacLeftovers(install.appPath);
     updateInfoPlistHash(install.appPath, install.asarPath);
     signMac(install.appPath);
   }
@@ -1892,7 +1897,7 @@ async function cmdPatch(extensionDir) {
   await patchAsar(install.asarPath, extensionDir);
   clearServiceWorkerCache();
   if (install.platform === 'darwin') {
-    disableMacAutoUpdates(install.appPath);
+    cleanupMacLeftovers(install.appPath);
     updateInfoPlistHash(install.appPath, install.asarPath);
     signMac(install.appPath);
   }
@@ -1913,7 +1918,7 @@ function cmdUnpatch() {
   unpatchAsar(install.asarPath);
   clearServiceWorkerCache();
   if (install.platform === 'darwin') {
-    disableMacAutoUpdates(install.appPath);
+    cleanupMacLeftovers(install.appPath);
     updateInfoPlistHash(install.appPath, install.asarPath);
     signMac(install.appPath);
   }

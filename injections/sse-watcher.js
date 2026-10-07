@@ -67,6 +67,12 @@
 (function () {
 	'use strict';
 
+	// Loaded by the manifest's MAIN-world entry in browsers and by a script tag from
+	// electron_reciever.js on Claude Desktop (which ignores that entry). Wrapping fetch twice would
+	// report every completion twice.
+	if (window.__claudeUsageSseWatcher) return;
+	window.__claudeUsageSseWatcher = true;
+
 	const COMPLETION_RE = /^https?:\/\/claude\.ai\/api\/organizations\/([^/]+)\/chat_conversations\/([^/]+)\/(retry_)?completion$/;
 
 	// Cheap reject before JSON.parse - this runs on every record of every completion stream, and

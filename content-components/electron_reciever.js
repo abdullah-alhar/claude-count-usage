@@ -4,6 +4,12 @@
 async function initElectronReceiver() {
 	console.log('Electron receiver initializing...');
 
+	// Claude Desktop ignores the manifest's `"world": "MAIN"` content script, so the completion-stream
+	// watcher never ran there: no live usage, reply token count or - on the free plan, where /usage
+	// reports nothing - any session/weekly figure at all. Inject it into the page the same way as the
+	// webrequest polyfill. It guards against running twice where the manifest entry does work.
+	injectPageScript('injections/sse-watcher.js');
+
 	// Get monkeypatch patterns for request interception
 	const patterns = await browser.runtime.sendMessage({
 		type: 'getMonkeypatchPatterns'
@@ -68,9 +74,14 @@ async function initElectronReceiver() {
 
 function setupRequestInterception(patterns) {
 	// Inject external request interception script with patterns as data attribute
+	injectPageScript('injections/webrequest-polyfill.js', { patterns: JSON.stringify(patterns) });
+}
+
+// Runs an extension file in the page's own world (where claude.ai's window.fetch lives).
+function injectPageScript(file, dataset = {}) {
 	const script = document.createElement('script');
-	script.src = browser.runtime.getURL('injections/webrequest-polyfill.js');
-	script.dataset.patterns = JSON.stringify(patterns);
+	script.src = browser.runtime.getURL(file);
+	Object.assign(script.dataset, dataset);
 	script.onload = function () {
 		this.remove();
 	};

@@ -10,7 +10,6 @@
 #
 #  What's new in v2:
 #    ✓ Auto-recovery if app.asar is corrupted
-#    ✓ Removes ShipIt auto-updater (patch now survives reboots)
 #    ✓ Clears staged Squirrel update caches
 #    ✓ Removes old stale LaunchAgents from previous installs
 # =============================================================
@@ -110,13 +109,14 @@ else
   warn "Patch check returned: $CHECK_RESULT — Claude may still work, but verify manually"
 fi
 
-# ── 6. Check auto-update prevention ──────────────────────────
+# ── 6. Check Claude's updater is intact ──────────────────────
+# Older installers deleted ShipIt, which made Claude crash whenever it downloaded an update.
 
 SHIPIT_PATH="/Applications/Claude.app/Contents/Frameworks/Squirrel.framework/Resources/ShipIt"
-if [ ! -f "$SHIPIT_PATH" ]; then
-  log "Auto-update protection active (ShipIt removed — patch will survive reboots)"
+if [ -f "$SHIPIT_PATH" ]; then
+  log "Claude's updater is intact (Claude updates normally; re-run this installer after an update)"
 else
-  warn "ShipIt still present — patch may be overwritten on reboot"
+  warn "Claude's updater (ShipIt) is missing — Claude may crash when it downloads an update"
 fi
 
 # ── 7. Restart Claude Desktop ─────────────────────────────────
@@ -156,7 +156,6 @@ echo "  • Left sidebar  → 'Usage' with Session (5h) + Weekly bars"
 echo "  • In any chat   → Token / Cost / Cache stats below heading"
 echo ""
 echo "New in v2:"
-echo "  • Patch now survives Mac reboots (ShipIt auto-update blocked)"
 echo "  • Auto-recovery if Claude Desktop app.asar is corrupted"
 echo ""
 echo "To uninstall: double-click  uninstall.command"

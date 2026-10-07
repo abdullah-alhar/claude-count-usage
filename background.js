@@ -628,8 +628,6 @@ async function runAuthoritativePass({ orgId, conversationId, api, tabId }) {
 	const isNewMessage = pendingRequest !== undefined;
 	const alreadyCounted = !!pendingRequest?.settled;
 
-	const model = pendingRequest?.model || defaultModelForTier(usageData.subscriptionTier);
-
 	const conversationData = await conversation.getInfo(isNewMessage, {
 		toolTokens: pendingRequest?.toolTokens || 0
 	});
@@ -639,6 +637,9 @@ async function runAuthoritativePass({ orgId, conversationId, api, tabId }) {
 		return false;
 	}
 
+	// The model this message was sent with when the request named one, else the conversation's own
+	// model as the API reports it (getInfo already resolved that, falling back to the plan default).
+	const model = pendingRequest?.model || conversationData.model || defaultModelForTier(usageData.subscriptionTier);
 	conversationData.model = model;
 	await Log('authoritative pass: modelVersion -',
 		'from API:', conversationData.modelVersion,
@@ -820,8 +821,12 @@ async function onBeforeRequestHandler(details) {
 			await Log("warn", "Failed to fetch pre-message usage snapshot:", error);
 		}
 
-		const modelVersion = requestBodyJSON?.model || defaultModelVersionForTier(subscriptionTier);
-		const model = modelFamilyFromVersion(modelVersion) || defaultModelForTier(subscriptionTier);
+		// Only what the request itself names. claude.ai often leaves `model` out and serves the
+		// conversation's own model; recording the plan default in its place made every later pass
+		// override the API's real model with it (Opus 5.5 chats priced as Sonnet 5). null lets the
+		// conversation's model from the API stand.
+		const modelVersion = requestBodyJSON?.model || null;
+		const model = modelVersion ? (modelFamilyFromVersion(modelVersion) || defaultModelForTier(subscriptionTier)) : null;
 		await Log("Model from request:", model, modelVersion);
 
 		let turnUuid = requestBodyJSON?.turn_message_uuids?.assistant_message_uuid;

@@ -73,6 +73,10 @@ To remove it, run **`uninstall.bat`** — this fully uninstalls Claude Desktop r
 
 The tracker checks this repo's [latest release](https://github.com/abdullah-alhar/claude-count-usage/releases/latest) every 12 hours (turn this off under **Settings → Updates**, or use **Check for updates now**). To update, download the new installer for your platform from the release and run it again — **Install.app** / **`install.command`** on Mac, **Install.exe** / **`install.bat`** on Windows.
 
+**When Claude Desktop itself updates**, the update replaces the patched app with the official one, so the usage bars disappear after the restart that installs it. Run the installer again to bring them back. The tracker shows a notification when a Claude update has been downloaded.
+
+**Claude closing by itself in the middle of a task (Mac, v1.4)?** Older installers removed Claude's updater helper (ShipIt). From v1.4 on, Claude got far enough into installing its own update to need that helper, and crashed instead. Since v1.5 the helper is left in place. If yours was already removed, the installer reinstalls the latest official Claude Desktop once to restore it; your chats and settings are kept.
+
 **Black screen for 30+ seconds when opening Claude (Mac)?** macOS is asking whether Claude may use **"Claude Safe Storage"** in your keychain, and the prompt is often hidden behind Claude's window. Find the prompt, enter your Mac password and click **Always Allow**. Since v1.4 this is needed once; earlier versions asked again after every install.
 
 **Slow start or black screen on Windows?** Since v1.4 every launch writes a timing log to `%LOCALAPPDATA%\Claude\logs\ccu-startup.log` (if it isn't there, check `%APPDATA%\Claude\logs`). Please attach that file and `main.log` from the same folder when you report it. The log shows where the time went: before the app started at all, before the window opened, or while claude.ai loaded. Note that patching changes `claude.exe`, so it is no longer signed by Anthropic, and antivirus software may scan it more thoroughly than the official build.

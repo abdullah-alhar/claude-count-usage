@@ -169,8 +169,9 @@ class LengthUI {
 
 	async renderAll() {
 		const tier = this.state.usageData?.subscriptionTier;
-		this.state.currentModel = await getCurrentModel(200, tier);
-		this.state.currentModelVersion = await getCurrentModelVersion(200, tier);
+		const conversationModel = this.state.conversationData?.modelVersion || null;
+		this.state.currentModel = await getCurrentModel(200, tier, conversationModel);
+		this.state.currentModelVersion = await getCurrentModelVersion(200, tier, conversationModel);
 		await Log('LengthUI: renderAll - detected:', this.state.currentModelVersion,
 			'| stored on conversation:', this.state.conversationData?.modelVersion,
 			'| isCurrentlyCached:', this.state.conversationData?.isCurrentlyCached(this.state.currentModelVersion));
@@ -454,8 +455,9 @@ class LengthUI {
 
 	async checkModelChange() {
 		const tier = this.state.usageData?.subscriptionTier;
-		const newModel = await getCurrentModel(200, tier);
-		const newModelVersion = await getCurrentModelVersion(200, tier);
+		const conversationModel = this.state.conversationData?.modelVersion || null;
+		const newModel = await getCurrentModel(200, tier, conversationModel);
+		const newModelVersion = await getCurrentModelVersion(200, tier, conversationModel);
 		if ((newModel && newModel !== this.state.currentModel) ||
 			(newModelVersion && newModelVersion !== this.state.currentModelVersion)) {
 			await Log('LengthUI: Model changed, recalculating displays');
