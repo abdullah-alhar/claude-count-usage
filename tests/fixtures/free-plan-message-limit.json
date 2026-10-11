@@ -1,0 +1,26 @@
+{
+  "_fixture_notes": {
+    "captured": "2026-10-11",
+    "source": "message_limit event of POST .../chat_conversations/<id>/completion (text/event-stream)",
+    "account": "claude_free, model claude-sonnet-5-5. /usage answered 200 with every limit null and an empty `limits` array, so this stream event is the only usage the free plan reports.",
+    "usage_in_tests": "tests/sse-stream.test.js runs it through content-components/sse_bridge.js. `resolved` is trimmed to the fields seen; nothing reads it."
+  },
+  "type": "message_limit",
+  "message_limit": {
+    "type": "within_limit",
+    "resetsAt": null,
+    "remaining": null,
+    "perModelLimit": null,
+    "representativeClaim": "five_hour",
+    "overageDisabledReason": "overage_not_provisioned",
+    "overageInUse": false,
+    "windows": {
+      "5h": { "status": "within_limit", "resets_at": 1791747600, "utilization": 0.03 },
+      "7d": { "status": "within_limit", "resets_at": 1792184400, "utilization": 0 }
+    },
+    "resolved": {
+      "status": "ok",
+      "limit": { "kind": "session", "group": "session", "percent": 3, "severity": "normal" }
+    }
+  }
+}
