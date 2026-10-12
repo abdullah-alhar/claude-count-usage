@@ -54,8 +54,10 @@ let FORCE_DEBUG = false;
 
 // Error handlers are registered synchronously so they're active from the start of page load,
 // before the async storage read below resolves.
+// event.error is null for errors the page world raises (they reach us sanitized), so fall back to
+// the message and location - a bare "null" says nothing.
 window.addEventListener('error', async function (event) {
-	await logError(event.error);
+	await logError(event.error ?? `${event.message || 'Unknown error'} (${event.filename || '?'}:${event.lineno || 0})`);
 
 });
 
@@ -63,11 +65,6 @@ window.addEventListener('unhandledrejection', async function (event) {
 	await logError(event.reason);
 
 });
-
-self.onerror = async function (message, source, lineno, colno, error) {
-	await logError(error);
-	return false;
-};
 
 // Load FORCE_DEBUG from storage
 browser.storage.local.get('force_debug').then(result => {

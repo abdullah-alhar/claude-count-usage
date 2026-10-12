@@ -578,6 +578,14 @@ class SettingsCard {
 			.join('\n');
 	}
 
+	// Log lines carry only a time of day, so a pasted log can't otherwise say which version or
+	// platform produced it, or on what date.
+	debugLogHeader() {
+		const version = browser.runtime.getManifest().version;
+		const client = isElectron ? 'Claude Desktop' : 'Browser';
+		return `Claude Count Usage ${version} | ${client} | ${navigator.userAgent} | copied ${new Date().toString()}`;
+	}
+
 	async toggleDebugLogs() {
 		const { debugLogView, debugToggleBtn, debugClearRow } = this.elements;
 		const show = debugLogView.style.display === 'none';
@@ -602,7 +610,7 @@ class SettingsCard {
 		const status = this.elements.debugStatus;
 		try {
 			const text = await this.readDebugLogText();
-			await navigator.clipboard.writeText(text || localize('settings.debug_empty'));
+			await navigator.clipboard.writeText(`${this.debugLogHeader()}\n${text || localize('settings.debug_empty')}`);
 			status.style.color = SUCCESS_GREEN;
 			status.textContent = localize('settings.debug_copied');
 		} catch (e) {

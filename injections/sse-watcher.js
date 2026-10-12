@@ -88,6 +88,14 @@
 	// whatever is already installed rather than calling window.fetch, or we recurse.
 	const prevFetch = window.fetch;
 
+	// The page world can't write the extension's debug log, so lifecycle facts go to sse_bridge.js,
+	// which logs them. Status and content type only - nothing from the request or reply.
+	const diag = (stage, detail = {}) => {
+		try {
+			window.postMessage({ type: 'claudeUsageTrackerDiag', stage, ...detail }, window.location.origin);
+		} catch (e) { /* diagnostics must never break the page */ }
+	};
+
 	window.fetch = async function (...args) {
 		const response = await prevFetch.apply(this, args);
 
@@ -103,6 +111,7 @@
 			return response;
 		}
 		if (!match) return response;
+		diag('completion', { status: response.status, contentType: response.headers.get('content-type') || '' });
 
 		// Kill-switch, mirroring Claude-Toolbox's convention: teeing the completion body can make
 		// the renderer receive data in bursts, so leave a way to A/B it without a rebuild.
@@ -121,6 +130,7 @@
 		pump(response.clone(), match[1], match[2], !!match[3]);
 		return response;
 	};
+	diag('installed');
 
 	// The refusal carries the same message_limit payload a stream would have, one level deeper and
 	// double-encoded: { error: { message: "<JSON string>" } }. Observed 2026-08-22, free plan, 5h

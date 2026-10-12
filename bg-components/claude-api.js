@@ -378,7 +378,8 @@ class ClaudeAPI {
 			const memberships = appStartData.account?.memberships || [];
 			const org = memberships.find(membership => membership.organization.uuid === this.orgId)?.organization;
 
-			await Log("Fetched org info for:", this.orgId, org?.name);
+			// Personal orgs are named after the account email; keep that out of shareable debug logs.
+			await Log("Fetched org info for:", this.orgId, org?.name?.replace(/[^\s@]+@[^\s@']+/g, '[email]'));
 			await subscriptionTiersCache.set(this.orgId, org, 24 * 60 * 60 * 1000);
 			return org;
 		} catch (error) {

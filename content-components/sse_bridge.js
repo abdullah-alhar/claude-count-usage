@@ -122,7 +122,17 @@ function countAssistantTokens(text) {
 function initSseBridge() {
 	window.addEventListener('message', (event) => {
 		if (event.source !== window || event.origin !== window.location.origin) return;
+		if (event.data?.type === 'claudeUsageTrackerDiag') {
+			const { stage, status, contentType } = event.data;
+			Log(stage === 'completion'
+				? `SSE watcher: completion response ${status} (${contentType || 'no content type'})`
+				: `SSE watcher: ${stage}`);
+			return;
+		}
 		if (event.data?.type !== 'claudeUsageTrackerStream') return;
+
+		Log('SSE stream received:', event.data.rejected ? 'rejected send' : 'reply',
+			'| usage in stream:', event.data.messageLimit?.windows ? Object.keys(event.data.messageLimit.windows).join(',') : 'none');
 
 		// The stream came from this tab, so it is this tab's org unless the user switched orgs
 		// mid-generation. Cheap to rule out.
