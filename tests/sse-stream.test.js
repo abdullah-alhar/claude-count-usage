@@ -34,8 +34,20 @@ const fakeWindow = {
 	location: { origin: 'https://claude.ai' },
 	addEventListener: (type, fn) => { if (type === 'message') windowListeners.push(fn); }
 };
+// Stands in for the browser's resource timing, so the test can deliver entries the way Chromium does.
+let performanceCallback = null;
+class FakePerformanceObserver {
+	constructor(callback) { performanceCallback = callback; }
+	observe() {}
+}
+const pageDiagnostics = {
+	injections: {}, watcherInstalledAt: null, watcherWrappedNativeFetch: null,
+	watcherCompletions: [], streamsReceived: 0, streamsWithUsage: 0, browserCompletions: []
+};
 const context = vm.createContext({
 	window: fakeWindow,
+	PerformanceObserver: FakePerformanceObserver,
+	pageDiagnostics,
 	console,
 	setTimeout: (fn) => fn(),
 	Log: () => {},
@@ -94,5 +106,24 @@ windowListeners[0]({
 	data: { type: 'claudeUsageTrackerStream', streamOrgId: 'org-2', messageLimit: fixture.message_limit, assistantText: '' }
 });
 assert(uiUpdates.length === 1, 'a stream from another org is ignored');
+
+console.log('\nsse_bridge: diagnostics for the debug log header');
+
+assert(pageDiagnostics.streamsReceived === 2 && pageDiagnostics.streamsWithUsage === 2, 'every stream is counted, including one from another org');
+
+windowListeners[0]({ source: fakeWindow, origin: 'https://claude.ai', data: { type: 'claudeUsageTrackerDiag', stage: 'installed', nativeFetch: true } });
+assert(pageDiagnostics.watcherInstalledAt !== null && pageDiagnostics.watcherWrappedNativeFetch === true, 'watcher install is recorded with its fetch kind');
+
+windowListeners[0]({ source: fakeWindow, origin: 'https://claude.ai', data: { type: 'claudeUsageTrackerDiag', stage: 'completion', status: 200, contentType: 'text/event-stream' } });
+assert(pageDiagnostics.watcherCompletions.join() === '200 text/event-stream', 'completion seen by the watcher is recorded');
+assert(uiUpdates.length === 1 && backgroundMessages.length === 1, 'diagnostic messages never reach the usage path');
+
+assert(typeof performanceCallback === 'function', 'sse_bridge observes resource timing');
+performanceCallback({ getEntries: () => [
+	{ name: 'https://claude.ai/api/organizations/o/chat_conversations/c/completion', initiatorType: 'fetch', responseStatus: 200 },
+	{ name: 'https://claude.ai/api/organizations/o/chat_conversations/c?tree=True', initiatorType: 'fetch', responseStatus: 200 },
+	{ name: 'https://claude.ai/api/organizations/o/chat_conversations/c/retry_completion?x=1', initiatorType: 'xmlhttprequest' }
+] });
+assert(pageDiagnostics.browserCompletions.join('; ') === 'fetch 200; xmlhttprequest', 'browser-recorded completions are counted with how they were made; other requests are not');
 
 console.log(`\nAll ${passedTests} SSE stream tests passed.`);

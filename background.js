@@ -1,6 +1,6 @@
 import './lib/browser-polyfill.min.js';
 import './lib/o200k_base.js';
-import { CONFIG, RawLog, FORCE_DEBUG, StoredMap, getStorageValue, setStorageValue, removeStorageValue, getOrgStorageKey, sendTabMessage, messageRegistry } from './bg-components/utils.js';
+import { CONFIG, RawLog, appendLogEntries, FORCE_DEBUG, StoredMap, getStorageValue, setStorageValue, removeStorageValue, getOrgStorageKey, sendTabMessage, messageRegistry } from './bg-components/utils.js';
 import { tokenStorageManager, tokenCounter } from './bg-components/tokenManagement.js';
 import { getStrategy } from './bg-components/container-strategy.js';
 import { UsageData, modelFamilyFromVersion, defaultModelForTier, defaultModelVersionForTier } from './shared/dataclasses.js';
@@ -544,6 +544,11 @@ function queueAuthoritativePass(options) {
 	});
 	processNextTask();
 }
+
+messageRegistry.register('appendDebugLogs', (message) => {
+	appendLogEntries(message.entries);
+	return true;
+});
 
 async function interceptedRequest(message, sender) {
 	await Log("Got intercepted request");

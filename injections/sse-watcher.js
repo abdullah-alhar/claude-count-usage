@@ -130,7 +130,14 @@
 		pump(response.clone(), match[1], match[2], !!match[3]);
 		return response;
 	};
-	diag('installed');
+	// If claude.ai had already swapped fetch for its own wrapper, ours sits on top of it - fine. What
+	// this can't see is code that grabbed fetch before we got here; the browser-side count in
+	// sse_bridge.js catches that case.
+	let nativeFetch = null;
+	try {
+		nativeFetch = /\[native code\]/.test(Function.prototype.toString.call(prevFetch));
+	} catch (e) { /* leave unknown */ }
+	diag('installed', { nativeFetch });
 
 	// The refusal carries the same message_limit payload a stream would have, one level deeper and
 	// double-encoded: { error: { message: "<JSON string>" } }. Observed 2026-08-22, free plan, 5h

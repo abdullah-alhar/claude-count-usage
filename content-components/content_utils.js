@@ -66,6 +66,18 @@ window.addEventListener('unhandledrejection', async function (event) {
 
 });
 
+// What this page load has seen of the reply-reading path, kept in memory so the debug log Copy can
+// report it even if log lines were lost. Filled by electron_reciever.js and sse_bridge.js.
+const pageDiagnostics = {
+	injections: {},              // file -> 'pending' | 'loaded' | 'failed'
+	watcherInstalledAt: null,
+	watcherWrappedNativeFetch: null,
+	watcherCompletions: [],      // "status content-type" per completion the watcher's fetch saw
+	streamsReceived: 0,
+	streamsWithUsage: 0,
+	browserCompletions: []       // initiatorType per completion request the browser itself recorded
+};
+
 // Load FORCE_DEBUG from storage
 browser.storage.local.get('force_debug').then(result => {
 	FORCE_DEBUG = result.force_debug || false;
@@ -90,7 +102,13 @@ async function flushLogs() {
 	if (pendingLogEntries.length === 0) return;
 	const batch = pendingLogEntries;
 	pendingLogEntries = [];
-	// Read fresh and append so we don't clobber logs written by other contexts (background / other tabs).
+	// The background owns debug_logs (see appendLogEntries in bg-components/utils.js). Writing it
+	// from here as well lost lines whenever both flushed at once.
+	try {
+		if (await browser.runtime.sendMessage({ type: 'appendDebugLogs', entries: batch })) return;
+	} catch (e) {
+		// Background unreachable - fall back to writing directly, accepting the race.
+	}
 	try {
 		const result = await browser.storage.local.get('debug_logs');
 		const logs = result.debug_logs || [];

@@ -157,6 +157,16 @@ const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 let pendingLogEntries = [];
 let logFlushScheduled = false;
 
+// Content scripts hand their entries here instead of writing debug_logs themselves. Two contexts each
+// doing read-append-write on the same key overwrote each other's lines whenever their flushes
+// overlapped, which they do constantly at page load - exactly the lines a startup report needs.
+function appendLogEntries(entries) {
+	if (!Array.isArray(entries) || entries.length === 0) return;
+	pendingLogEntries.push(...entries.slice(-1000));
+	if (pendingLogEntries.length > 1000) pendingLogEntries = pendingLogEntries.slice(-1000);
+	scheduleLogFlush();
+}
+
 function scheduleLogFlush() {
 	if (logFlushScheduled) return;
 	logFlushScheduled = true;
@@ -430,7 +440,8 @@ class MessageHandlerRegistry {
 	}
 
 	async handle(message, sender) {
-		await Log("Background received message:", message.type);
+		// Logging every log batch would log forever.
+		if (message.type !== 'appendDebugLogs') await Log("Background received message:", message.type);
 		const handler = this.handlers.get(message.type);
 		if (!handler) {
 			await Log("warn", `No handler for message type: ${message.type}`);
@@ -449,6 +460,7 @@ export {
 	CONFIG,
 	sleep,
 	RawLog,
+	appendLogEntries,
 	FORCE_DEBUG,
 	StoredMap,
 	getOrgStorageKey,

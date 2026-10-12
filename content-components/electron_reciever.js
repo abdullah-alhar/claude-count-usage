@@ -82,13 +82,16 @@ function injectPageScript(file, dataset = {}) {
 	const script = document.createElement('script');
 	script.src = browser.runtime.getURL(file);
 	Object.assign(script.dataset, dataset);
+	pageDiagnostics.injections[file] = 'pending';
 	script.onload = function () {
+		pageDiagnostics.injections[file] = 'loaded';
 		Log(`Injected page script: ${file}`);
 		this.remove();
 	};
 	// Without this a blocked injection is silent, and a debug log can't tell "never loaded" apart
 	// from "loaded but saw nothing".
 	script.onerror = function () {
+		pageDiagnostics.injections[file] = 'failed';
 		Log('error', `Failed to inject page script: ${file}`);
 		this.remove();
 	};
