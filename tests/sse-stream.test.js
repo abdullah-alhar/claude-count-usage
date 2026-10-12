@@ -32,7 +32,8 @@ const windowListeners = [];
 const backgroundMessages = [];
 const fakeWindow = {
 	location: { origin: 'https://claude.ai' },
-	addEventListener: (type, fn) => { if (type === 'message') windowListeners.push(fn); }
+	addEventListener: (type, fn) => { if (type === 'message') windowListeners.push(fn); },
+	postMessage: () => {}
 };
 // Stands in for the browser's resource timing, so the test can deliver entries the way Chromium does.
 let performanceCallback = null;
@@ -115,7 +116,7 @@ windowListeners[0]({ source: fakeWindow, origin: 'https://claude.ai', data: { ty
 assert(pageDiagnostics.watcherInstalledAt !== null && pageDiagnostics.watcherWrappedNativeFetch === true, 'watcher install is recorded with its fetch kind');
 
 windowListeners[0]({ source: fakeWindow, origin: 'https://claude.ai', data: { type: 'claudeUsageTrackerDiag', stage: 'completion', status: 200, contentType: 'text/event-stream' } });
-assert(pageDiagnostics.watcherCompletions.join() === '200 text/event-stream', 'completion seen by the watcher is recorded');
+assert(pageDiagnostics.watcherCompletions.join() === 'completion 200 text/event-stream', 'completion seen by the watcher is recorded');
 assert(uiUpdates.length === 1 && backgroundMessages.length === 1, 'diagnostic messages never reach the usage path');
 
 assert(typeof performanceCallback === 'function', 'sse_bridge observes resource timing');

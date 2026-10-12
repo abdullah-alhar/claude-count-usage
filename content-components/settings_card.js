@@ -590,9 +590,9 @@ class SettingsCard {
 			`Claude Count Usage ${version} | ${client} | ${navigator.userAgent} | copied ${new Date().toString()}`,
 			`This page since load: injected ${injections}`
 				+ ` | watcher ${d.watcherInstalledAt ? `installed ${d.watcherInstalledAt}, wrapped native fetch: ${d.watcherWrappedNativeFetch}` : 'not installed'}`
-				+ ` | completions seen by watcher: ${list(d.watcherCompletions)}`
+				+ ` | message streams seen by watcher: ${list(d.watcherCompletions)}`
 				+ ` | streams received: ${d.streamsReceived} (with usage: ${d.streamsWithUsage})`
-				+ ` | completions recorded by browser: ${list(d.browserCompletions)}`
+				+ ` | message sends recorded by browser: ${list(d.browserCompletions)}`
 		].join('\n');
 	}
 

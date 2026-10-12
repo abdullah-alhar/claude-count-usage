@@ -67,13 +67,20 @@
 (function () {
 	'use strict';
 
-	// Loaded by the manifest's MAIN-world entry in browsers and by a script tag from
-	// electron_reciever.js on Claude Desktop (which ignores that entry). Wrapping fetch twice would
+	// Loaded by the manifest's MAIN-world entry and, on Claude Desktop, also by a script tag from
+	// electron_reciever.js (older Desktop builds ignored that entry). Wrapping fetch twice would
 	// report every completion twice.
 	if (window.__claudeUsageSseWatcher) return;
 	window.__claudeUsageSseWatcher = true;
 
-	const COMPLETION_RE = /^https?:\/\/claude\.ai\/api\/organizations\/([^/]+)\/chat_conversations\/([^/]+)\/(retry_)?completion$/;
+	// `completion2` is the same endpoint's newer name; Claude Desktop's own stream tracking matches both.
+	const COMPLETION_RE = /^https?:\/\/claude\.ai\/api\/organizations\/([^/]+)\/chat_conversations\/([^/]+)\/(retry_)?completion2?$/;
+
+	// Accounts on claude.ai's newer chat backend ("bard", gated by claude_ai_clients_completions_use_bard)
+	// never call /completion. A message is sent with a ConversationService/PerformAction RPC and the
+	// reply, including usage, arrives on a long-lived ConversationService/StreamTimeline stream in
+	// binary Connect/protobuf. See pumpTimeline below.
+	const TIMELINE_RE = /^https?:\/\/claude\.ai\/claudeai-rpc\/anthropic\.bard\.api\.v\w+\.ConversationService\/StreamTimeline$/;
 
 	// Cheap reject before JSON.parse - this runs on every record of every completion stream, and
 	// a long reply is thousands of records on the page's main thread. Records that pass are
@@ -100,24 +107,32 @@
 		const response = await prevFetch.apply(this, args);
 
 		let match;
+		let isTimeline = false;
 		try {
 			const input = args[0];
 			let url = input instanceof Request ? input.url
 				: input instanceof URL ? input.href
 					: String(input ?? '');
 			if (url.startsWith('/')) url = 'https://claude.ai' + url;
-			match = COMPLETION_RE.exec(url.split('?')[0]);
+			const path = url.split('?')[0];
+			isTimeline = TIMELINE_RE.test(path);
+			match = isTimeline ? null : COMPLETION_RE.exec(path);
 		} catch (e) {
 			return response;
 		}
-		if (!match) return response;
-		diag('completion', { status: response.status, contentType: response.headers.get('content-type') || '' });
+		if (!match && !isTimeline) return response;
+		diag(isTimeline ? 'timeline' : 'completion', { status: response.status, contentType: response.headers.get('content-type') || '' });
 
 		// Kill-switch, mirroring Claude-Toolbox's convention: teeing the completion body can make
 		// the renderer receive data in bursts, so leave a way to A/B it without a rebuild.
 		try {
 			if (localStorage.getItem('claude_usage_sse_off') === '1') return response;
 		} catch (e) { /* storage blocked - carry on */ }
+
+		if (isTimeline) {
+			if (response.ok && response.body) pumpTimeline(response.clone(), requestOrgId(args));
+			return response;
+		}
 
 		if (!response.body || !response.headers.get('content-type')?.includes('event-stream')) {
 			// A send refused for hitting the limit answers with JSON, not a stream. It still reports
@@ -138,6 +153,191 @@
 		nativeFetch = /\[native code\]/.test(Function.prototype.toString.call(prevFetch));
 	} catch (e) { /* leave unknown */ }
 	diag('installed', { nativeFetch });
+
+	// sse_bridge.js asks once it is listening. On Claude Desktop the manifest's MAIN-world copy runs at
+	// document_start, long before the content scripts, so its first 'installed' has nobody to hear it.
+	window.addEventListener('message', (event) => {
+		if (event.source === window && event.data?.type === 'claudeUsageTrackerPing') diag('installed', { nativeFetch });
+	});
+
+	// ---------------------------------------------------------------------------------------------
+	// New chat backend ("bard"), as read from claude.ai's bundled protobuf descriptors on 2026-10-12
+	// (anthropic/bard/api/v1alpha/bard_api.proto). Not a documented API - re-verify before relying on
+	// any of it. Only the fields below are read; everything else is skipped by wire type.
+	//
+	//   StreamTimelineResponse  1: event StreamEvent
+	//   StreamEvent             4: message_limit MessageLimit   (oneof with content appends etc.)
+	//   MessageLimit            1: status enum, 13: windows map<string, MessageLimitWindow>
+	//   MessageLimitWindow      1: status enum, 2: resets_at Timestamp {1: seconds},
+	//                           3: utilization double (0-1)
+	//   status enum             1 WITHIN_LIMIT, 2 APPROACHING, 3 EXCEEDED
+	//
+	// claude.ai converts this back to the JSON message_limit shape the old SSE stream carried
+	// (same window keys "5h", "7d", ...; resets_at in unix seconds), so that is what we emit too
+	// and sse_bridge.js needs no second parser.
+	//
+	// Transport: Connect streaming. Each message is a 5-byte envelope - flags (0x01 = gzip
+	// compressed, 0x02 = end-of-stream JSON trailer), then a big-endian uint32 length - followed by
+	// the message bytes.
+	// ---------------------------------------------------------------------------------------------
+	const LIMIT_STATUS = { 1: 'within_limit', 2: 'approaching_limit', 3: 'exceeded_limit' };
+	const MAX_FRAME_BYTES = 16 * 1024 * 1024;
+	const utf8 = new TextDecoder();
+
+	function requestOrgId(args) {
+		try {
+			const input = args[0];
+			const headers = new Headers(args[1]?.headers || (input instanceof Request ? input.headers : undefined));
+			return headers.get('x-organization-uuid');
+		} catch (e) {
+			return null;
+		}
+	}
+
+	function readVarint(bytes, pos) {
+		let result = 0;
+		let scale = 1;
+		for (;;) {
+			if (pos.i >= bytes.length) throw new Error('truncated varint');
+			const byte = bytes[pos.i++];
+			// Multiply rather than shift: int64 seconds don't fit JS's 32-bit bitwise ops.
+			result += (byte & 0x7f) * scale;
+			if (!(byte & 0x80)) return result;
+			scale *= 128;
+		}
+	}
+
+	// Yields {field, wire, value}; value is a number for varints, a byte view otherwise.
+	function* protoFields(bytes) {
+		const pos = { i: 0 };
+		while (pos.i < bytes.length) {
+			const tag = readVarint(bytes, pos);
+			const field = Math.floor(tag / 8);
+			const wire = tag % 8;
+			let value;
+			if (wire === 0) {
+				value = readVarint(bytes, pos);
+			} else if (wire === 1 || wire === 5) {
+				const size = wire === 1 ? 8 : 4;
+				value = bytes.subarray(pos.i, pos.i + size);
+				pos.i += size;
+			} else if (wire === 2) {
+				const length = readVarint(bytes, pos);
+				value = bytes.subarray(pos.i, pos.i + length);
+				pos.i += length;
+			} else {
+				throw new Error(`unsupported wire type ${wire}`);
+			}
+			if (pos.i > bytes.length) throw new Error('truncated field');
+			yield { field, wire, value };
+		}
+	}
+
+	function decodeLimitWindow(bytes) {
+		let status;
+		let resetsAt;
+		let utilization = 0;
+		for (const f of protoFields(bytes)) {
+			if (f.field === 1 && f.wire === 0) status = LIMIT_STATUS[f.value];
+			else if (f.field === 2 && f.wire === 2) {
+				for (const t of protoFields(f.value)) if (t.field === 1 && t.wire === 0) resetsAt = t.value;
+			} else if (f.field === 3 && f.wire === 1) {
+				utilization = new DataView(f.value.buffer, f.value.byteOffset, 8).getFloat64(0, true);
+			}
+		}
+		// Same rule as claude.ai's own converter: a window without a status or reset time is dropped.
+		if (status === undefined || resetsAt === undefined) return null;
+		return { status, resets_at: resetsAt, utilization };
+	}
+
+	function decodeMessageLimit(bytes) {
+		let type;
+		const windows = {};
+		for (const f of protoFields(bytes)) {
+			if (f.field === 1 && f.wire === 0) {
+				type = LIMIT_STATUS[f.value];
+			} else if (f.field === 13 && f.wire === 2) {
+				let key;
+				let win = null;
+				for (const e of protoFields(f.value)) {
+					if (e.field === 1 && e.wire === 2) key = utf8.decode(e.value);
+					else if (e.field === 2 && e.wire === 2) win = decodeLimitWindow(e.value);
+				}
+				if (key && win) windows[key] = win;
+			}
+		}
+		return Object.keys(windows).length ? { type, windows } : null;
+	}
+
+	// Returns the MessageLimit carried by one StreamTimelineResponse, or null. Most frames are content
+	// appends; those cost a couple of tag reads before being skipped.
+	function messageLimitFromTimelineFrame(bytes) {
+		for (const f of protoFields(bytes)) {
+			if (f.field !== 1 || f.wire !== 2) continue;
+			for (const e of protoFields(f.value)) {
+				if (e.field === 4 && e.wire === 2) return decodeMessageLimit(e.value);
+			}
+		}
+		return null;
+	}
+
+	async function gunzip(bytes) {
+		const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+		return new Uint8Array(await new Response(stream).arrayBuffer());
+	}
+
+	// Unlike /completion this stream outlives a single reply (it follows the open conversation), so
+	// usage is reported per message_limit event as it arrives instead of once at the end.
+	async function pumpTimeline(clone, orgId) {
+		const reader = clone.body.getReader();
+		let buffer = new Uint8Array(0);
+		try {
+			for (;;) {
+				const { done, value } = await reader.read();
+				if (done) return;
+				const joined = new Uint8Array(buffer.length + value.length);
+				joined.set(buffer);
+				joined.set(value, buffer.length);
+				buffer = joined;
+
+				while (buffer.length >= 5) {
+					const flags = buffer[0];
+					const length = ((buffer[1] << 24) >>> 0) + (buffer[2] << 16) + (buffer[3] << 8) + buffer[4];
+					// Not a Connect stream after all (or a format change) - stop rather than misread it.
+					if (length > MAX_FRAME_BYTES) { reader.cancel().catch(() => {}); return; }
+					if (buffer.length < 5 + length) break;
+					const payload = buffer.slice(5, 5 + length);
+					buffer = buffer.slice(5 + length);
+					if (flags & 0x02) { reader.cancel().catch(() => {}); return; }
+
+					let messageLimit = null;
+					try {
+						messageLimit = messageLimitFromTimelineFrame(flags & 0x01 ? await gunzip(payload) : payload);
+					} catch (e) {
+						continue; // one undecodable frame must not end the watch
+					}
+					if (!messageLimit) continue;
+					window.postMessage({
+						type: 'claudeUsageTrackerStream',
+						streamOrgId: orgId || null,
+						// Usage only: the reply text arrives as protobuf content appends this watcher
+						// doesn't decode, so there is nothing to count toward conversation length.
+						conversationId: null,
+						usageOnly: true,
+						isRetry: false,
+						messageLimit,
+						assistantText: '',
+						sawNonTextBlock: false,
+						assistantUuid: null,
+						parentUuid: null,
+						model: null
+					}, window.location.origin);
+				}
+			}
+		} catch (e) {
+			// Stream aborted (conversation closed, page navigated) - nothing to clean up.
+		}
+	}
 
 	// The refusal carries the same message_limit payload a stream would have, one level deeper and
 	// double-encoded: { error: { message: "<JSON string>" } }. Observed 2026-08-22, free plan, 5h

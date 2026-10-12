@@ -122,7 +122,8 @@ function countAssistantTokens(text) {
 // Resource timing records every request the page makes, whichever fetch (or XHR) made it, so it
 // tells "the message was never sent from this page" apart from "it was sent past our fetch wrapper".
 // Entries land when the response finishes, i.e. after the reply has streamed.
-const COMPLETION_PATH_RE = /\/chat_conversations\/[^/?]+\/(retry_)?completion(\?|$)/;
+// Both the old send (/completion, /completion2) and the new backend's (ConversationService/PerformAction).
+const COMPLETION_PATH_RE = /\/chat_conversations\/[^/?]+\/(retry_)?completion2?(\?|$)|\/ConversationService\/PerformAction(\?|$)/;
 
 function watchCompletionRequests() {
 	try {
@@ -141,6 +142,8 @@ function watchCompletionRequests() {
 
 function initSseBridge() {
 	watchCompletionRequests();
+	// The watcher may have started before this listener existed (see its ping handler).
+	setTimeout(() => window.postMessage({ type: 'claudeUsageTrackerPing' }, window.location.origin), 0);
 	window.addEventListener('message', (event) => {
 		if (event.source !== window || event.origin !== window.location.origin) return;
 		if (event.data?.type === 'claudeUsageTrackerDiag') {
@@ -149,9 +152,9 @@ function initSseBridge() {
 				pageDiagnostics.watcherInstalledAt = new Date().toLocaleTimeString();
 				pageDiagnostics.watcherWrappedNativeFetch = nativeFetch;
 				Log(`SSE watcher: installed (wrapped native fetch: ${nativeFetch})`);
-			} else if (stage === 'completion') {
-				pageDiagnostics.watcherCompletions.push(`${status} ${contentType || 'no content type'}`);
-				Log(`SSE watcher: completion response ${status} (${contentType || 'no content type'})`);
+			} else if (stage === 'completion' || stage === 'timeline') {
+				pageDiagnostics.watcherCompletions.push(`${stage} ${status} ${contentType || 'no content type'}`);
+				Log(`SSE watcher: ${stage} response ${status} (${contentType || 'no content type'})`);
 			}
 			return;
 		}
@@ -159,7 +162,7 @@ function initSseBridge() {
 		pageDiagnostics.streamsReceived++;
 		if (event.data.messageLimit?.windows) pageDiagnostics.streamsWithUsage++;
 
-		Log('SSE stream received:', event.data.rejected ? 'rejected send' : 'reply',
+		Log('SSE stream received:', event.data.usageOnly ? 'timeline usage' : event.data.rejected ? 'rejected send' : 'reply',
 			'| usage in stream:', event.data.messageLimit?.windows ? Object.keys(event.data.messageLimit.windows).join(',') : 'none');
 
 		// The stream came from this tab, so it is this tab's org unless the user switched orgs

@@ -1277,7 +1277,7 @@ console.log('\n=== 20. Claude Desktop: the completion-stream watcher actually ru
 {
 	const receiver = fs.readFileSync(path.join(rootDir, 'content-components', 'electron_reciever.js'), 'utf8');
 	assert(/injectPageScript\('injections\/sse-watcher\.js'\)/.test(receiver),
-		'electron_reciever injects sse-watcher.js into the page (Electron ignores the manifest\'s MAIN-world entry)');
+		'electron_reciever injects sse-watcher.js into the page (older Desktop builds ignore the manifest\'s MAIN-world entry)');
 	for (const file of ['manifest.json', 'manifest_electron.json']) {
 		const manifest = JSON.parse(fs.readFileSync(path.join(rootDir, file), 'utf8'));
 		const resources = manifest.web_accessible_resources.flatMap(entry => entry.resources);
@@ -1287,7 +1287,7 @@ console.log('\n=== 20. Claude Desktop: the completion-stream watcher actually ru
 	// Loaded by both the manifest entry and the script tag in a browser - fetch must be wrapped once.
 	const watcherSrc = fs.readFileSync(path.join(rootDir, 'injections', 'sse-watcher.js'), 'utf8');
 	const originalFetch = async () => ({});
-	const win = { fetch: originalFetch };
+	const win = { fetch: originalFetch, location: { origin: 'https://claude.ai' }, postMessage() {}, addEventListener() {} };
 	// eslint-disable-next-line no-new-func
 	const runWatcher = new Function('window', 'localStorage', watcherSrc);
 	runWatcher(win, { getItem: () => null });

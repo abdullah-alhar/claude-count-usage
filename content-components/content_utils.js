@@ -72,10 +72,10 @@ const pageDiagnostics = {
 	injections: {},              // file -> 'pending' | 'loaded' | 'failed'
 	watcherInstalledAt: null,
 	watcherWrappedNativeFetch: null,
-	watcherCompletions: [],      // "status content-type" per completion the watcher's fetch saw
+	watcherCompletions: [],      // "kind status content-type" per completion/timeline stream the watcher saw
 	streamsReceived: 0,
 	streamsWithUsage: 0,
-	browserCompletions: []       // initiatorType per completion request the browser itself recorded
+	browserCompletions: []       // initiatorType per message send the browser itself recorded
 };
 
 // Load FORCE_DEBUG from storage
