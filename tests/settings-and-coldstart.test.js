@@ -1089,11 +1089,11 @@ console.log('\n=== 13. Automatic update check toggle ===');
 	const cleared = [];
 	// eslint-disable-next-line no-new-func
 	const ensure = new Function('getStorageValue', 'getAlarm', 'scheduleAlarm', 'clearAlarm',
-		'AUTO_UPDATE_CHECK_KEY', 'UPDATE_CHECK_ALARM', 'UPDATE_CHECK_INTERVAL_MS', 'USAGE_HEARTBEAT_ALARM', 'USAGE_HEARTBEAT_MINUTES',
+		'AUTO_UPDATE_CHECK_KEY', 'UPDATE_CHECK_ALARM', 'UPDATE_CHECK_INTERVAL_MS', 'USAGE_HEARTBEAT_ALARM', 'USAGE_HEARTBEAT_MINUTES', 'hasNativeAlarms',
 		'"use strict"; return (async function(){ ' + alarmsSrc + ' })();');
-	const runEnsure = (auto) => ensure(async (k, d) => (k === 'autoUpdateCheck' ? auto : d),
+	const runEnsure = (auto, chrome = false) => ensure(async (k, d) => (k === 'autoUpdateCheck' ? auto : d),
 		async (n) => armed[n], async (n, o) => { armed[n] = o; }, async (n) => { cleared.push(n); delete armed[n]; },
-		'autoUpdateCheck', 'updateCheck', uc.UPDATE_CHECK_INTERVAL_MS, 'usageHeartbeat', 2);
+		'autoUpdateCheck', 'updateCheck', uc.UPDATE_CHECK_INTERVAL_MS, 'usageHeartbeat', 2, chrome);
 
 	await runEnsure(true);
 	assert(armed.updateCheck && armed.updateCheck.periodInMinutes === uc.UPDATE_CHECK_INTERVAL_MS / 60000,
@@ -1102,6 +1102,12 @@ console.log('\n=== 13. Automatic update check toggle ===');
 	await runEnsure(false);
 	assert(!armed.updateCheck && cleared.includes('updateCheck'), 'toggle off -> update alarm cleared');
 	assert(armed.usageHeartbeat, 'toggle off leaves the usage heartbeat alone');
+	await runEnsure(true);
+	cleared.length = 0;
+	await runEnsure(true, true);
+	assert(!armed.updateCheck && cleared.includes('updateCheck'),
+		'Chrome build (Web Store updates it) -> no release update alarm even with the toggle on');
+	assert(armed.usageHeartbeat && armed.checkResetNotifications, 'Chrome build still arms heartbeat and reset alarms');
 
 	assert(/register\('checkForUpdatesNow', \(\) => runUpdateCheck\(\)\)/.test(bgSrc),
 		'manual check calls runUpdateCheck directly (ignores the toggle and staleness)');

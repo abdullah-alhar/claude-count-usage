@@ -2,7 +2,7 @@
 	"manifest_version": 3,
 	"name": "Claude Count Usage",
 	"version": "1.5.3",
-	"description": "Track your Claude.ai session and weekly usage. Shows usage bars in sidebar and token/cost/cache stats in the chat header. No telemetry. All data stays on your device.",
+	"description": "See your Claude.ai session (5h) and weekly usage in the sidebar, plus token, cost and cache stats per chat. Runs locally.",
 	"author": "Abdullah Alhar",
 	"background": {
 		"service_worker": "background.js",
@@ -39,14 +39,11 @@
 	],
 	"permissions": [
 		"storage",
-		"tabs",
-		"scripting"
+		"alarms",
+		"notifications"
 	],
 	"host_permissions": [
-		"*://claude.ai/*",
-		"https://raw.githubusercontent.com/*",
-		"https://github.com/*",
-		"https://api.github.com/*"
+		"https://claude.ai/*"
 	],
 	"web_accessible_resources": [
 		{
@@ -58,12 +55,25 @@
 				"injections/sse-watcher.js"
 			],
 			"matches": [
-				"<all_urls>"
+				"https://claude.ai/*"
 			]
 		}
 	],
 	"icons": {
-		"128": "icon128.png"
+		"16": "icons/icon16.png",
+		"32": "icons/icon32.png",
+		"48": "icons/icon48.png",
+		"128": "icons/icon128.png"
 	},
-	"incognito": "split"
+	"incognito": "split",
+	"action": {
+		"default_title": "Claude Count Usage",
+		"default_icon": {
+			"16": "icons/icon16.png",
+			"32": "icons/icon32.png",
+			"48": "icons/icon48.png"
+		}
+	},
+	"homepage_url": "https://github.com/abdullah-alhar/claude-count-usage",
+	"minimum_chrome_version": "111"
 }

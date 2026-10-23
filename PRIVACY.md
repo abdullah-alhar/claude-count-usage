@@ -18,9 +18,9 @@ Claude Count Usage tracks how much of your Claude.ai token quota you have used. 
 
 **Nothing is collected. None of your usage or conversation data ever leaves your device.**
 
-All processing happens locally inside the Claude Desktop app. No analytics service is contacted. The only request made outside claude.ai is:
+All processing happens locally, inside the Claude Desktop app or your Chrome browser. No analytics service is contacted. The only request made outside claude.ai is:
 
-- **Update check (on by default, can be turned off):** a plain `GET https://api.github.com/repos/abdullah-alhar/claude-count-usage/releases/latest` every 12 hours, or when you click *Check for updates now*. Nothing is sent with it — no identifiers, no usage data, no cookies. GitHub sees an ordinary request from your IP address, as with any web page. Turn it off under **Settings → Updates**; the manual button still works.
+- **Update check (Claude Desktop only, on by default, can be turned off):** a plain `GET https://api.github.com/repos/abdullah-alhar/claude-count-usage/releases/latest` every 12 hours, or when you click *Check for updates now*. Nothing is sent with it — no identifiers, no usage data, no cookies. GitHub sees an ordinary request from your IP address, as with any web page. Turn it off under **Settings → Updates**; the manual button still works. The Chrome extension makes no such request: the Chrome Web Store updates it.
 
 | Data | What happens to it |
 |---|---|
@@ -57,6 +57,17 @@ The extension **reads** these responses. It does **not** modify them, block them
 
 ## Permissions Explained
 
+**Chrome extension**
+
+| Permission | Reason |
+|---|---|
+| `storage` | Save usage percentages and UI preferences locally on your device |
+| `alarms` | Refresh usage every 2 minutes and time the optional reset notification |
+| `notifications` | Show the optional notification when your usage resets |
+| Host: `claude.ai` | Read your usage and conversation structure, and draw the bars into the page |
+
+**Claude Desktop**
+
 | Permission | Reason |
 |---|---|
 | `storage` | Save usage percentages and UI preferences locally on your device |
@@ -69,7 +80,7 @@ The extension **reads** these responses. It does **not** modify them, block them
 
 ## Data Retention & Deletion
 
-All data is stored only in the extension's local storage inside Claude Desktop. It is deleted when:
+All data is stored only in the extension's local storage, inside Claude Desktop or your browser profile. It is deleted when:
 
 - You **uninstall** the extension
 - Cache entries **expire** automatically:

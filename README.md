@@ -42,6 +42,12 @@ Length*: 33,868 tokens  |  Cost: 210 credits  |  Cached for: 60m
 
 ## Installation
 
+### Chrome (claude.ai in the browser)
+
+Install **Claude Count Usage** from the Chrome Web Store, then open [claude.ai](https://claude.ai). The store keeps it up to date.
+
+To run it from source instead: `chrome://extensions` → turn on **Developer mode** → **Load unpacked** → choose this folder. `npm run package:chrome` builds the store zip; see [store/PUBLISHING.md](store/PUBLISHING.md).
+
 ### Claude Desktop (Mac)
 
 No extra launcher needed — this patches the official Claude Desktop app directly.

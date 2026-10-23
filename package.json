@@ -5,7 +5,8 @@
   "private": true,
   "scripts": {
     "test": "node tests/usage-notice.test.js && node tests/settings-and-coldstart.test.js && node tests/sse-stream.test.js && node tests/bard-timeline.test.js",
-    "build": "node scripts/build-dataclasses.js"
+    "build": "node scripts/build-dataclasses.js",
+    "package:chrome": "node scripts/package-chrome.js"
   },
   "author": "Abdullah Alhar",
   "license": "MIT"

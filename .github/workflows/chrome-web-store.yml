@@ -1,0 +1,69 @@
+# Packages the browser extension and uploads it to the Chrome Web Store.
+# The item must already exist (first submission is done by hand in the developer dashboard,
+# see store/PUBLISHING.md) and these repository secrets must be set:
+#   CWS_EXTENSION_ID, CWS_CLIENT_ID, CWS_CLIENT_SECRET, CWS_REFRESH_TOKEN
+name: Chrome Web Store
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Submit for review after uploading (otherwise upload a draft only)
+        type: boolean
+        default: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Test
+        run: npm test
+
+      - name: Package
+        run: npm run package:chrome
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chrome-extension
+          path: dist/*.zip
+
+      - name: Upload and publish
+        env:
+          EXTENSION_ID: ${{ secrets.CWS_EXTENSION_ID }}
+          CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}
+          PUBLISH: ${{ github.event_name == 'release' || inputs.publish }}
+        run: |
+          set -euo pipefail
+          if [ -z "$EXTENSION_ID" ] || [ -z "$REFRESH_TOKEN" ]; then
+            echo "::error::Chrome Web Store secrets are not set - see store/PUBLISHING.md"
+            exit 1
+          fi
+          TOKEN=$(curl -fsS https://oauth2.googleapis.com/token \
+            -d client_id="$CLIENT_ID" -d client_secret="$CLIENT_SECRET" \
+            -d refresh_token="$REFRESH_TOKEN" -d grant_type=refresh_token | jq -r .access_token)
+
+          ZIP=$(ls dist/*.zip)
+          UPLOAD=$(curl -sS -X PUT -H "Authorization: Bearer $TOKEN" -H "x-goog-api-version: 2" \
+            -T "$ZIP" "https://www.googleapis.com/upload/chromewebstore/v1.1/items/$EXTENSION_ID")
+          echo "$UPLOAD"
+          if [ "$(echo "$UPLOAD" | jq -r .uploadState)" != "SUCCESS" ]; then
+            echo "::error::Upload failed"
+            exit 1
+          fi
+
+          if [ "$PUBLISH" = "true" ]; then
+            RESULT=$(curl -sS -X POST -H "Authorization: Bearer $TOKEN" -H "x-goog-api-version: 2" \
+              -H "Content-Length: 0" "https://www.googleapis.com/chromewebstore/v1.1/items/$EXTENSION_ID/publish")
+            echo "$RESULT"
+            echo "$RESULT" | jq -e '.status | index("OK")' > /dev/null || { echo "::error::Publish failed"; exit 1; }
+          fi

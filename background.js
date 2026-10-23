@@ -5,7 +5,7 @@ import { tokenStorageManager, tokenCounter } from './bg-components/tokenManageme
 import { getStrategy } from './bg-components/container-strategy.js';
 import { UsageData, modelFamilyFromVersion, defaultModelForTier, defaultModelVersionForTier } from './shared/dataclasses.js';
 import { translate, normalizeLocale } from './shared/localization.js';
-import { scheduleAlarm, getAlarm, clearAlarm, rearmAlarms, createNotification } from './bg-components/electron-compat.js';
+import { scheduleAlarm, getAlarm, clearAlarm, rearmAlarms, createNotification, onNativeAlarm, hasNativeAlarms } from './bg-components/electron-compat.js';
 import { checkForUpdates, detectPlatform, isStatusStale, UPDATE_CHECK_INTERVAL_MS, UPDATE_STATUS_KEY, AUTO_UPDATE_CHECK_KEY } from './bg-components/update-check.js';
 import { invalidateAccountSettings, invalidateProfileTokens, storeSseUsage } from './bg-components/claude-api.js';
 
@@ -166,6 +166,8 @@ async function checkResetNotifications() {
 messageRegistry.register('electron-alarm', (msg) => {
 	handleAlarm(msg.name);
 });
+// In Chrome they are real chrome.alarms.
+onNativeAlarm(handleAlarm);
 
 
 //#endregion
@@ -1061,7 +1063,9 @@ async function ensurePeriodicAlarms() {
 		['checkResetNotifications', 3],
 		[USAGE_HEARTBEAT_ALARM, USAGE_HEARTBEAT_MINUTES]
 	];
-	if (await getStorageValue(AUTO_UPDATE_CHECK_KEY, true)) {
+	// The Chrome Web Store updates the extension itself, and the releases only carry Desktop
+	// installers, so automatic checks are a Desktop-only feature.
+	if (!hasNativeAlarms && await getStorageValue(AUTO_UPDATE_CHECK_KEY, true)) {
 		periodic.push([UPDATE_CHECK_ALARM, UPDATE_CHECK_INTERVAL_MS / 60_000]);
 	} else {
 		await clearAlarm(UPDATE_CHECK_ALARM);
@@ -1100,7 +1104,7 @@ messageRegistry.register('electronPageReady', async () => {
 	await ensurePeriodicAlarms();
 	await rearmAlarms();
 	await runUsageHeartbeat('page-ready');
-	await runScheduledUpdateCheck().catch(error => Log("warn", "Update check failed:", error));
+	if (!hasNativeAlarms) await runScheduledUpdateCheck().catch(error => Log("warn", "Update check failed:", error));
 	return true;
 });
 
@@ -1109,6 +1113,15 @@ messageRegistry.register('electronTabActivated', () => {
 	runUsageHeartbeat('focus');
 	return true;
 });
+// Chrome's equivalent of the Desktop focus event above.
+if (hasNativeAlarms) {
+	browser.tabs.onActivated.addListener(async ({ tabId }) => {
+		try {
+			const tab = await browser.tabs.get(tabId);
+			if (tab.url?.startsWith('https://claude.ai/')) runUsageHeartbeat('focus');
+		} catch { /* tab closed in the meantime */ }
+	});
+}
 
 messageRegistry.register('getUpdateStatus', async () => ({
 	currentVersion: browser.runtime.getManifest().version,

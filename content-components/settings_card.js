@@ -215,7 +215,8 @@ class SettingsCard {
 		const notifications = this.createNotificationsSection();
 		const updates = this.createUpdatesSection();
 		const more = this.createMoreSection();
-		for (const section of [usage, notifications, updates, more]) {
+		// The browser extension is updated by the Chrome Web Store, so the release check is Desktop-only.
+		for (const section of (typeof isElectron === 'undefined' || isElectron) ? [usage, notifications, updates, more] : [usage, notifications, more]) {
 			body.appendChild(section.container);
 		}
 
