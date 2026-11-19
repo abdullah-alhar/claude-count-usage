@@ -44,26 +44,29 @@ Length*: 33,868 tokens  |  Cost: 210 credits  |  Cached for: 60m
 
 ### Claude Desktop (Mac)
 
-No extra launcher needed — this patches the official Claude Desktop app directly.
+Install [Node.js](https://nodejs.org) if needed, then paste this into Terminal:
 
-1. Install [Node.js](https://nodejs.org) if you don't have it.
-2. Download this repo, or grab the [Mac Installer](https://github.com/abdullah-alhar/claude-count-usage/releases/download/New/Mac.installer.zip) and unzip it.
-3. Double-click **Install.app** (from the zip) or **`install.command`** (from the repo).
-   - If macOS shows a security prompt, click **Open**.
-   - If Claude Desktop isn't installed yet, the installer downloads it from Anthropic's CDN first.
-   - Works standalone — pulls the rest of the extension from GitHub automatically.
-4. Claude Desktop restarts with usage tracking already active.
+```bash
+/bin/bash -c 'f=$(mktemp "${TMPDIR:-/tmp}/ccu-install.XXXXXX") || exit; cleanup() { rm -f -- "$f"; }; trap cleanup EXIT; curl -fsSL https://raw.githubusercontent.com/abdullah-alhar/claude-count-usage/main/install.command -o "$f" && /bin/bash "$f"'
+```
+
+The installer fetches the extension from GitHub and restarts Claude Desktop after installation.
+
+For a double-click install, use **Install.app** from the Mac installer ZIP.
 
 To remove it, double-click **Uninstall.app** or run **`uninstall.command`**. This performs a full, clean uninstall of Claude Desktop rather than trying to patch it back — reinstall fresh from [claude.ai/download](https://claude.ai/download) afterward if you want to keep using Claude without the tracker.
 
 ### Claude Desktop (Windows)
 
-1. Install [Node.js](https://nodejs.org).
-2. Download this repo, or grab the [Windows Installer](https://github.com/abdullah-alhar/claude-count-usage/releases/download/New/Windows.installer.zip) and unzip it.
-3. Run **`install.bat`**.
-   - If Claude Desktop isn't found, it's installed automatically.
-   - Works standalone and fetches the rest from GitHub if run alone.
-4. Claude Desktop restarts with usage tracking active.
+Install [Node.js](https://nodejs.org) if needed, then paste this into PowerShell:
+
+```powershell
+& { $f = Join-Path $env:TEMP ('ccu-install-' + [guid]::NewGuid() + '.bat'); try { Invoke-WebRequest -UseBasicParsing -ErrorAction Stop -Uri 'https://raw.githubusercontent.com/abdullah-alhar/claude-count-usage/main/install.bat' -OutFile $f; & $f } finally { Remove-Item -LiteralPath $f -ErrorAction SilentlyContinue } }
+```
+
+The installer fetches the extension from GitHub and restarts Claude Desktop after installation.
+
+For a double-click install, use **Install.exe**.
 
 To remove it, run **`uninstall.bat`** — this fully uninstalls Claude Desktop rather than trying to patch it back; grab a fresh copy from [claude.ai/download](https://claude.ai/download) afterward if you want to keep using it.
 
@@ -71,7 +74,7 @@ To remove it, run **`uninstall.bat`** — this fully uninstalls Claude Desktop r
 
 ### Updating
 
-The tracker checks this repo's [latest release](https://github.com/abdullah-alhar/claude-count-usage/releases/latest) every 12 hours (turn this off under **Settings → Updates**, or use **Check for updates now**). To update, download the new installer for your platform from the release and run it again — **Install.app** / **`install.command`** on Mac, **Install.exe** / **`install.bat`** on Windows.
+The tracker checks this repo's [latest release](https://github.com/abdullah-alhar/claude-count-usage/releases/latest) every 12 hours (turn this off under **Settings → Updates**, or use **Check for updates now**). To update, rerun the install command for your platform.
 
 **When Claude Desktop itself updates**, the update replaces the patched app with the official one, so the usage bars disappear after the restart that installs it. Run the installer again to bring them back. The tracker shows a notification when a Claude update has been downloaded.
 

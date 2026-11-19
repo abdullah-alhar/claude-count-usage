@@ -31,6 +31,10 @@ build/
 out/
 *.zip
 
+# Local checkout installers
+/install-v2.command
+/install-v2.bat
+
 # IDEs
 .idea/
 .vscode/

@@ -19,7 +19,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
-const { execFileSync } = require('child_process');
+const { execFileSync, spawn, spawnSync } = require('child_process');
 
 const MARKER = '// __CLAUDE_COUNT_USAGE_WRAPPER__';
 
@@ -445,16 +445,11 @@ function installDownloadedClaude(filePath) {
     }
 
     console.log(`Extracting Claude.app directly to ${destDir} with ditto...`);
-    execFileSync('ditto', ['-xk', filePath, destDir]);
+    execFileSync('ditto', ['-xk', filePath, destDir], { stdio: 'inherit' });
 
     if (!fs.existsSync(appDest)) {
       throw new Error(`Claude.app not found at ${appDest} after extraction`);
     }
-
-    // Strip quarantine right after extraction
-    try {
-      execFileSync('xattr', ['-cr', appDest], { stdio: 'ignore' });
-    } catch {}
 
     return appDest;
   }
@@ -1468,6 +1463,21 @@ function updateWindowsExeIntegrity(appPath, asarPath) {
 
 // ─── macOS Info.plist ElectronAsarIntegrity & Code Signing ──
 
+function checkMacBundleOwner(appPath) {
+  const owner = fs.statSync(appPath).uid;
+  if (owner !== process.geteuid()) {
+    throw new Error(`Claude.app is owned by UID ${owner}, but the installer is running as UID ${process.geteuid()}. Run the installer as the app's owner, without sudo.`);
+  }
+}
+
+function checkMacBundleAccess({ appPath, asarPath }) {
+  checkMacBundleOwner(appPath);
+  fs.accessSync(path.dirname(asarPath), fs.constants.W_OK);
+  for (const file of [asarPath, path.join(appPath, 'Contents', 'Info.plist')]) {
+    fs.closeSync(fs.openSync(file, 'r+'));
+  }
+}
+
 function updateInfoPlistHash(appPath, asarPath) {
   if (os.platform() !== 'darwin') return;
   const infoPlist = path.join(appPath, 'Contents', 'Info.plist');
@@ -1500,12 +1510,19 @@ function updateInfoPlistHash(appPath, asarPath) {
     }
   }
 
+  verifyInfoPlistHash(appPath, asarPath);
+}
+
+function verifyInfoPlistHash(appPath, asarPath) {
+  const infoPlist = path.join(appPath, 'Contents', 'Info.plist');
   const readBack = execFileSync('/usr/libexec/PlistBuddy', [
     '-c',
     'Print :ElectronAsarIntegrity:Resources/app.asar:hash',
     infoPlist
   ], { encoding: 'utf8' }).trim();
 
+  const headerHash = computeAsarHeaderHash(asarPath);
+  console.log(`ASAR header SHA256: ${headerHash}\nInfo.plist SHA256:  ${readBack}`);
   if (readBack !== headerHash) {
     throw new Error(
       `ElectronAsarIntegrity verification mismatch in Info.plist: expected "${headerHash}", read back "${readBack}"`
@@ -1611,10 +1628,7 @@ function signMac(appPath) {
   // Read entitlements BEFORE re-signing: while Anthropic's signature is still on the binaries this
   // is the exact official list (so new Claude versions carry over automatically).
   const frameworksDir = path.join(appPath, 'Contents', 'Frameworks');
-  let helperApps = [];
-  try {
-    helperApps = fs.readdirSync(frameworksDir).filter(name => name.endsWith('.app'));
-  } catch {}
+  const helperApps = fs.readdirSync(frameworksDir).filter(name => name.endsWith('.app'));
   const plan = [...helperApps.map(name => ({ name, codePath: path.join(frameworksDir, name) })), { name: '', codePath: appPath }]
     .map(({ name, codePath }) => {
       const live = readEntitlements(codePath);
@@ -1623,17 +1637,11 @@ function signMac(appPath) {
     });
 
   console.log('Removing quarantine attributes...');
-  try {
-    execFileSync('xattr', ['-cr', appPath], { stdio: 'ignore' });
-  } catch {}
+  execFileSync('xattr', ['-cr', appPath], { stdio: 'inherit' });
 
   console.log('Ad-hoc re-signing bundle:', appPath);
-  try {
-    // Signs every nested framework/helper; the entitlement-carrying pieces are redone below.
-    execFileSync('codesign', ['--force', '--deep', '--sign', '-', appPath], { stdio: 'inherit' });
-  } catch (e) {
-    console.warn('codesign notice:', e.message);
-  }
+  // Sign nested code before restoring helper and main app entitlements.
+  execFileSync('codesign', ['--force', '--deep', '--sign', '-', appPath], { stdio: 'inherit' });
 
   // Helpers first, main app last: the outer signature seals the nested ones. The main app is always
   // re-signed here, even with no entitlements, so it gets the stable keychain requirement.
@@ -1641,13 +1649,11 @@ function signMac(appPath) {
   for (const { name, codePath, source, entitlements } of plan) {
     const isMain = name === '';
     if (!Object.keys(entitlements).length && !isMain) continue;
-    try {
-      signWithEntitlements(codePath, entitlements, isMain ? mainRequirement : null);
-      console.log(`Restored ${Object.keys(entitlements).length} entitlements on ${name || path.basename(appPath)} (from ${source})`);
-    } catch (e) {
-      console.warn(`[Warning] Could not restore entitlements on ${name || path.basename(appPath)}: ${e.message}`);
-    }
+    signWithEntitlements(codePath, entitlements, isMain ? mainRequirement : null);
+    console.log(`Restored ${Object.keys(entitlements).length} entitlements on ${name || path.basename(appPath)} (from ${source})`);
   }
+
+  verifyMacSignature(appPath, path.join(appPath, 'Contents', 'Resources', 'app.asar'));
 
   try {
     const dr = execFileSync('codesign', ['-d', '-r-', appPath], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -1664,11 +1670,28 @@ function signMac(appPath) {
   } else {
     console.warn('[Warning] Virtualization entitlement missing after re-signing - Cowork file access will be unavailable.');
   }
+}
 
-  // Clear quarantine again after signing to guarantee Gatekeeper allows it
-  try {
-    execFileSync('xattr', ['-cr', appPath], { stdio: 'ignore' });
-  } catch {}
+function verifyMacSignature(appPath, asarPath) {
+  console.log('Verifying macOS signature...');
+  execFileSync('codesign', ['--verify', '--deep', '--strict', '--verbose=2', appPath], { stdio: 'inherit' });
+
+  const details = spawnSync('codesign', ['-dv', appPath], { encoding: 'utf8' });
+  if (details.error) throw details.error;
+  const signature = details.stdout + details.stderr;
+  process.stdout.write(signature);
+  if (details.status !== 0 || !/^Signature=adhoc$/m.test(signature) || /^TeamIdentifier=Q6L2SF6YDW$/m.test(signature)) {
+    throw new Error('Expected an ad-hoc signature without the original Anthropic TeamIdentifier.');
+  }
+
+  verifyInfoPlistHash(appPath, asarPath);
+
+  const attributes = execFileSync('xattr', ['-lr', appPath], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+  const quarantine = attributes.split('\n').filter(line => line.includes('quarantine'));
+  if (quarantine.length) {
+    throw new Error(`Quarantine attributes remain:\n${quarantine.join('\n')}`);
+  }
+  console.log('xattr -lr | grep quarantine: no matches');
 }
 
 // ─── macOS Leftover Cleanup ─────────────────────────────────
@@ -1816,6 +1839,7 @@ function clearServiceWorkerCache() {
 async function cmdInstall(extensionDir) {
   closeRunningClaude();
   let install = locateClaude();
+  if (install?.platform === 'darwin') checkMacBundleOwner(install.appPath);
 
   if (install && install.platform === 'darwin' && !isBundleHealthy(install.appPath)) {
     console.log('Detected corrupted or broken app bundle (broken framework symlinks).');
@@ -1866,6 +1890,7 @@ async function cmdInstall(extensionDir) {
     console.log(`Found Claude Desktop at: ${install.appPath}`);
   }
 
+  if (install.platform === 'darwin') checkMacBundleAccess(install);
   console.log(`Patching ${install.asarPath} ...`);
   await patchAsar(install.asarPath, extensionDir);
   clearServiceWorkerCache();
@@ -1885,7 +1910,7 @@ async function cmdInstall(extensionDir) {
     throw new Error(`Verification failed: ${install.asarPath} does not contain the injection marker after patching.`);
   }
 
-  console.log('\n Claude Count Usage installed successfully into Claude Desktop!');
+  if (install.platform !== 'darwin') console.log('\n Claude Count Usage installed successfully into Claude Desktop!');
 }
 
 async function cmdPatch(extensionDir) {
@@ -1894,6 +1919,7 @@ async function cmdPatch(extensionDir) {
   if (!install) {
     throw new Error('Claude Desktop not found. Use "install" to automatically download and install it.');
   }
+  if (install.platform === 'darwin') checkMacBundleAccess(install);
   await patchAsar(install.asarPath, extensionDir);
   clearServiceWorkerCache();
   if (install.platform === 'darwin') {
@@ -1908,13 +1934,14 @@ async function cmdPatch(extensionDir) {
   if (!isAsarPatched(install.asarPath)) {
     throw new Error(`Verification failed: ${install.asarPath} does not contain the injection marker after patching.`);
   }
-  console.log('Patched successfully.');
+  if (install.platform !== 'darwin') console.log('Patched successfully.');
 }
 
 function cmdUnpatch() {
   closeRunningClaude();
   const install = locateClaude();
   if (!install) throw new Error('Claude Desktop not found.');
+  if (install.platform === 'darwin') checkMacBundleAccess(install);
   unpatchAsar(install.asarPath);
   clearServiceWorkerCache();
   if (install.platform === 'darwin') {
@@ -1922,7 +1949,7 @@ function cmdUnpatch() {
     updateInfoPlistHash(install.appPath, install.asarPath);
     signMac(install.appPath);
   }
-  console.log('Unpatched and restored original Claude Desktop.');
+  if (install.platform !== 'darwin') console.log('Unpatched and restored original Claude Desktop.');
 }
 
 function isAsarPatched(asarPath) {
@@ -2003,22 +2030,82 @@ function cmdDelete() {
 
 // ─── CLI Entrypoint ─────────────────────────────────────────
 
+async function runMacInstaller(cmd, extensionDir) {
+  const logPath = path.join(os.homedir(), 'ccu-install.log');
+  const log = fs.openSync(logPath, 'w', 0o600);
+  try {
+    // Capture inherited tool output as well as installer messages.
+    const worker = spawn(process.execPath, [__filename, cmd, extensionDir, '--mac-install-worker'], {
+      stdio: ['inherit', 'pipe', 'pipe']
+    });
+    let logError;
+    const record = (chunk) => {
+      if (logError) return;
+      try {
+        fs.writeFileSync(log, chunk);
+      } catch (err) {
+        logError = err;
+      }
+    };
+    for (const [input, output] of [[worker.stdout, process.stdout], [worker.stderr, process.stderr]]) {
+      input.on('data', (chunk) => {
+        record(chunk);
+        output.write(chunk);
+      });
+    }
+    const status = await new Promise((resolve, reject) => {
+      worker.once('error', reject);
+      worker.once('close', resolve);
+    });
+    if (logError) throw logError;
+
+    if (status !== 0) {
+      const details = fs.readFileSync(logPath, 'utf8');
+      if (/\b(?:EPERM|EACCES)\b|permission denied|operation not permitted|access denied/i.test(details)) {
+        const message = 'macOS blocked a write. In System Settings → Privacy & Security, grant Terminal App Management or Full Disk Access, then run the installer again as the app owner.\n';
+        record(message);
+        process.stderr.write(message);
+      }
+    }
+    const result = `Claude Count Usage ${cmd} ${status === 0 ? 'succeeded' : 'failed'}. Log: ${logPath}\n`;
+    record(result);
+    if (logError) throw logError;
+    (status === 0 ? process.stdout : process.stderr).write(result);
+    return status === 0 ? 0 : 1;
+  } finally {
+    fs.closeSync(log);
+  }
+}
+
 if (require.main === module) {
-  const [,, cmd, arg1] = process.argv;
+  const [,, cmd, arg1, workerFlag] = process.argv;
   const extDir = arg1 || __dirname;
+  const macWorker = os.platform() === 'darwin' && workerFlag === '--mac-install-worker';
 
   (async () => {
+    if (os.platform() === 'darwin' && !macWorker && ['install', 'patch', 'unpatch'].includes(cmd)) {
+      try {
+        process.exitCode = await runMacInstaller(cmd, extDir);
+      } catch (err) {
+        console.error(`Claude Count Usage ${cmd} failed: ${err.message}`);
+        process.exitCode = 1;
+      }
+      return;
+    }
     switch (cmd) {
       case 'install':
         await cmdInstall(extDir);
+        if (macWorker) return;
         process.exit(0);
         break;
       case 'patch':
         await cmdPatch(extDir);
+        if (macWorker) return;
         process.exit(0);
         break;
       case 'unpatch':
         cmdUnpatch();
+        if (macWorker) return;
         process.exit(0);
         break;
       case 'check':
@@ -2044,6 +2131,10 @@ if (require.main === module) {
     }
   })().catch((err) => {
     console.error('\n❌ Error:', err.message || err);
+    if (macWorker) {
+      process.exitCode = 1;
+      return;
+    }
     process.exit(1);
   });
 }

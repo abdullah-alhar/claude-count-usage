@@ -545,7 +545,7 @@ class ProgressBar {
 		if (width !== '100%') this.container.style.width = width;
 
 		this.track = document.createElement('div');
-		this.track.className = 'bg-bg-500 ut-progress-track';
+		this.track.className = 'ut-progress-track';
 		if (height !== '6px') this.track.style.height = height;
 
 		this.bar = document.createElement('div');
@@ -625,6 +625,58 @@ async function injectStyles() {
 // Centralized layout detection and anchor resolution.
 // Each layout has match() to detect the page and anchors to find DOM insertion points.
 // Checked in order; first match() wins.
+
+const SIDEBAR_ROOT_SELECTOR = 'aside, nav, [role="complementary"], [role="navigation"]';
+const SIDEBAR_NAV_LABELS = ['Plugins', 'Artifacts', 'Projects', 'Search', 'New'];
+const SIDEBAR_NAV_CONTROL = 'a, button, [role="link"], [role="button"]';
+
+function getSidebarNavAnchor(sidebar) {
+	const controls = new Map();
+	for (const element of sidebar.querySelectorAll(`${SIDEBAR_NAV_CONTROL}, h2, h3, [role="heading"]`)) {
+		if (!element.getClientRects().length || element.closest('[hidden], [aria-hidden="true"], [inert]')) continue;
+		if (element.textContent.trim() === 'Pinned' && getComputedStyle(element).visibility === 'visible') break;
+		if (!element.matches(SIDEBAR_NAV_CONTROL)) continue;
+		const label = [element, ...element.querySelectorAll('*')].find(node =>
+			SIDEBAR_NAV_LABELS.includes(node.textContent.trim()) &&
+			node.closest(SIDEBAR_NAV_CONTROL) === element &&
+			!node.closest('[hidden], [aria-hidden="true"], [inert]') &&
+			node.getClientRects().length &&
+			getComputedStyle(node).visibility === 'visible'
+		)?.textContent.trim();
+		if (label && !controls.has(label)) controls.set(label, element);
+	}
+
+	const label = SIDEBAR_NAV_LABELS.find(name => controls.has(name));
+	if (!label) return null;
+
+	const control = controls.get(label);
+	const peers = [...controls.values()].filter(other => other !== control);
+	let row = control.closest('li');
+	if (!row || !sidebar.contains(row)) row = control;
+	for (let candidate = control; candidate.parentElement && candidate !== sidebar; candidate = candidate.parentElement) {
+		const siblings = [...candidate.parentElement.children];
+		if (siblings.some(sibling => sibling !== candidate && peers.some(peer => sibling.contains(peer)))) {
+			row = candidate;
+			break;
+		}
+	}
+
+	let start = 0;
+	let end = 0;
+	for (let node = control; node; node = node.parentElement) {
+		const style = getComputedStyle(node);
+		start += parseFloat(style.paddingInlineStart) || 0;
+		end += parseFloat(style.paddingInlineEnd) || 0;
+		if (node === row) break;
+	}
+	return {
+		sidebar,
+		label,
+		insertAfter: row,
+		styles: { paddingInlineStart: `${start}px`, paddingInlineEnd: `${end}px` },
+		classes: { add: ['shrink-0'], remove: ['px-2'] },
+	};
+}
 
 // Locate sidebar position: under "Customize" and above "Projects" section
 function getSidebarUnderCustomizeAnchor(sidebarRoot) {
@@ -1288,11 +1340,28 @@ const LayoutManager = {
 		return null;
 	},
 	getAnchor(anchorName) {
+		if (anchorName === 'sidebar') {
+			let preferred = null;
+			for (const sidebar of document.querySelectorAll(SIDEBAR_ROOT_SELECTOR)) {
+				if (sidebar.parentElement?.closest(SIDEBAR_ROOT_SELECTOR)) continue;
+				const candidate = getSidebarNavAnchor(sidebar);
+				if (candidate && (!preferred || SIDEBAR_NAV_LABELS.indexOf(candidate.label) < SIDEBAR_NAV_LABELS.indexOf(preferred.label))) {
+					preferred = candidate;
+				}
+				if (preferred?.label === 'Plugins') break;
+			}
+			if (preferred) return preferred;
+		}
 		const layout = this.detectLayout();
 		const anchorFn = layout?.anchors?.[anchorName];
 		let anchor = anchorFn ? anchorFn() : null;
-		if (!anchor && anchorName === 'sidebar') {
-			anchor = getLastResortSidebarAnchor();
+		if (anchorName === 'sidebar') {
+			anchor ||= getLastResortSidebarAnchor();
+			const parent = anchor?.parent || anchor?.insertAfter?.parentElement;
+			if (parent) {
+				const sidebar = parent.closest(SIDEBAR_ROOT_SELECTOR) || parent;
+				return getSidebarNavAnchor(sidebar) || { ...anchor, sidebar };
+			}
 		}
 		return anchor;
 	},

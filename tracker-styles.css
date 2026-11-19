@@ -78,6 +78,7 @@
 }
 
 .ut-progress-track {
+	background-color: color-mix(in srgb, currentColor 18%, transparent);
 	height: 6px;
 	border-radius: 3px;
 	overflow: hidden;
@@ -281,6 +282,26 @@
 	text-align: left;
 	padding: 0 0.5rem 0.5rem 0.5rem;
 	margin-top: 0.25rem;
+}
+
+.ut-usage-sidebar-content {
+	padding-right: 0.25rem;
+}
+
+.ut-usage-sidebar[data-ccu-sidebar-placement="nav"] {
+	box-sizing: border-box;
+	min-width: 0;
+}
+
+.ut-usage-sidebar[data-ccu-sidebar-placement="nav"] .ut-usage-toggle,
+.ut-usage-sidebar[data-ccu-sidebar-placement="nav"] .ut-usage-sidebar-content {
+	padding-inline: 0;
+}
+
+.ut-limit-reset {
+	min-width: 0;
+	white-space: normal;
+	overflow-wrap: anywhere;
 }
 
 .ut-usage-toggle:hover h3 {

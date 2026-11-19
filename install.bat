@@ -8,12 +8,9 @@ title Claude Count Usage Installer
 ::
 ::  HOW TO USE:
 ::    Double-click this file.
-::    Works standalone (auto-downloads extension if run alone)
+::    Downloads the extension from GitHub automatically
 ::    and directly patches official Claude Desktop.
 :: =============================================================
-
-set "SCRIPT_DIR=%~dp0"
-if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
 
 set "GITHUB_ZIP=https://github.com/abdullah-alhar/claude-count-usage/archive/refs/heads/main.zip"
 
@@ -41,36 +38,35 @@ if errorlevel 1 (
 for /f "tokens=*" %%v in ('node --version 2^>nul') do set "NODE_VER=%%v"
 echo [OK] Node.js !NODE_VER! found.
 
-:: ── 2. Check or Download Extension Files ───────────────────────
-set "IS_TEMP_SOURCE=0"
-set "EXT_DIR=%SCRIPT_DIR%"
-
-if not exist "%SCRIPT_DIR%\manifest_electron.json" (
-    echo.
-    echo [Info] Standalone installer detected - fetching latest extension from GitHub...
-    set "TMP_DIR=%TEMP%\ccu-dl-%RANDOM%"
-    set "IS_TEMP_SOURCE=1"
-    mkdir "!TMP_DIR!" >nul 2>&1
-    set "ZIP_PATH=!TMP_DIR!\repo.zip"
-
-    echo [Downloading] Downloading latest release from GitHub...
-    powershell -NoProfile -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object System.Net.WebClient).DownloadFile('%GITHUB_ZIP%', '!ZIP_PATH!')"
-    if errorlevel 1 (
-        echo [ERROR] Failed to download extension files from GitHub.
-        pause
-        exit /b 1
-    )
-
-    echo [Extracting] Unpacking extension files...
-    powershell -NoProfile -Command "Expand-Archive -Path '!ZIP_PATH!' -DestinationPath '!TMP_DIR!' -Force"
-    set "EXT_DIR=!TMP_DIR!\claude-count-usage-main"
-    if not exist "!EXT_DIR!\manifest_electron.json" (
-        echo [ERROR] Downloaded archive did not contain extension files.
-        pause
-        exit /b 1
-    )
-    echo [OK] Downloaded latest extension files from GitHub
+:: ── 2. Download Extension Files ────────────────────────────────
+echo.
+echo [Downloading] Fetching extension files from GitHub...
+set "TMP_DIR=%TEMP%\ccu-dl-%RANDOM%-%RANDOM%"
+mkdir "%TMP_DIR%" >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] Could not create a temporary download folder.
+    pause
+    exit /b 1
 )
+set "ZIP_PATH=%TMP_DIR%\repo.zip"
+
+powershell -NoProfile -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object System.Net.WebClient).DownloadFile($env:GITHUB_ZIP, $env:ZIP_PATH)"
+if errorlevel 1 (
+    echo [ERROR] Failed to download extension files from GitHub.
+    goto :install_failed
+)
+
+echo [Extracting] Unpacking extension files...
+powershell -NoProfile -Command "Expand-Archive -LiteralPath $env:ZIP_PATH -DestinationPath $env:TMP_DIR -ErrorAction Stop"
+if errorlevel 1 (
+    echo [ERROR] Failed to unpack extension archive.
+    goto :install_failed
+)
+
+set "EXT_DIR=%TMP_DIR%\claude-count-usage-main"
+if not exist "%EXT_DIR%\manifest_electron.json" goto :missing_files
+if not exist "%EXT_DIR%\desktop-injector.js" goto :missing_files
+echo [OK] Downloaded extension files from GitHub
 
 :: ── 3. Configure manifest and dataclasses ───────────────────────
 echo.
@@ -104,14 +100,10 @@ if errorlevel 1 (
     echo.
     echo [ERROR] Installation failed.
     echo If Claude Desktop is still open, please close it completely from Task Manager and try again.
-    pause
-    exit /b 1
+    goto :install_failed
 )
 
-:: Clean up temp folder if any
-if "!IS_TEMP_SOURCE!"=="1" (
-    if exist "!TMP_DIR!" rmdir /s /q "!TMP_DIR!" >nul 2>&1
-)
+rmdir /s /q "%TMP_DIR%" >nul 2>&1
 
 :: ── 5. Restart Claude ──────────────────────────────────────────
 echo.
@@ -154,3 +146,12 @@ echo.
 echo To uninstall later: double-click  uninstall.bat
 echo.
 pause
+exit /b 0
+
+:missing_files
+echo [ERROR] Downloaded archive did not contain expected extension files.
+
+:install_failed
+rmdir /s /q "%TMP_DIR%" >nul 2>&1
+pause
+exit /b 1

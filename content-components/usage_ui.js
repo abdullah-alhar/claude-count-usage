@@ -70,7 +70,7 @@ class UsageSection {
 		leftSide.appendChild(percentage);
 
 		const resetTime = document.createElement('div');
-		resetTime.className = 'text-text-400 text-xs';
+		resetTime.className = 'text-text-400 text-xs ut-limit-reset';
 
 		topLine.appendChild(leftSide);
 		topLine.appendChild(resetTime);
@@ -419,11 +419,11 @@ class UsageUI {
 	async createSidebarElements() {
 		const container = document.createElement('div');
 		container.className = 'ut-usage-sidebar flex flex-col mb-6';
+		container.setAttribute('data-ccu-sidebar-widget', '');
 
 		const { header, toggle } = this.createHeader();
 		const content = document.createElement('div');
-		content.className = 'flex min-h-0 flex-col pl-2';
-		content.style.paddingRight = '0.25rem';
+		content.className = 'ut-usage-sidebar-content flex min-h-0 flex-col pl-2';
 
 		const sectionsContainer = document.createElement('ul');
 		sectionsContainer.className = '-mx-1.5 flex flex-1 flex-col px-1.5 gap-px';
@@ -637,7 +637,37 @@ class UsageUI {
 	mountSidebar() {
 		const anchor = LayoutManager.getAnchor('sidebar');
 		if (!anchor) return false;
-		return mountToAnchor(this.elements.sidebar.container, anchor);
+		const widget = this.elements.sidebar.container;
+		if (this.sidebarRoot !== anchor.sidebar) this.observeSidebar(anchor.sidebar);
+		const mounted = anchor.sidebar.querySelector('[data-ccu-sidebar-widget]');
+		if (mounted && mounted !== widget) return true;
+
+		widget.setAttribute('data-ccu-sidebar-placement', anchor.label ? 'nav' : 'legacy');
+		if (!anchor.label) {
+			widget.style.paddingInlineStart = '';
+			widget.style.paddingInlineEnd = '';
+		}
+		const label = anchor.label ? `after ${anchor.label}` : 'legacy placement';
+		if (this.sidebarAnchorLabel !== label || !widget.isConnected) {
+			this.sidebarAnchorLabel = label;
+			Log(`UsageUI: Sidebar anchor: ${label}`);
+		}
+		return mountToAnchor(widget, anchor);
+	}
+
+	observeSidebar(sidebar) {
+		this.sidebarObserver?.disconnect();
+		clearTimeout(this.sidebarMountTimer);
+		this.sidebarRoot = sidebar;
+		const widget = this.elements.sidebar.container;
+		this.sidebarObserver = new MutationObserver(records => {
+			const changed = records.some(record => !widget.contains(record.target) &&
+				(record.removedNodes.length || [...record.addedNodes].some(node => node !== widget)));
+			if (!changed) return;
+			clearTimeout(this.sidebarMountTimer);
+			this.sidebarMountTimer = setTimeout(() => this.mountSidebar(), 75);
+		});
+		this.sidebarObserver.observe(sidebar, { childList: true, subtree: true });
 	}
 
 	mountChatArea() {
@@ -908,7 +938,7 @@ class UsageUI {
 			const mount = () => requestAnimationFrame(() => {
 				mountPending = false;
 				lastMountAt = Date.now();
-				this.mountSidebar();
+				if (!this.sidebarRoot?.isConnected) this.mountSidebar();
 				this.mountChatArea();
 			});
 			const wait = MIN_MOUNT_GAP_MS - (Date.now() - lastMountAt);

@@ -6,23 +6,27 @@
 #
 #  HOW TO USE:
 #    Double-click this file in Finder.
-#    Works standalone (auto-downloads extension if run alone)
+#    Downloads the extension from GitHub automatically
 #    and directly patches official Claude Desktop.
 # =============================================================
 
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-GITHUB_REPO="https://github.com/abdullah-alhar/claude-count-usage"
 GITHUB_ZIP="https://github.com/abdullah-alhar/claude-count-usage/archive/refs/heads/main.zip"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; BOLD='\033[1m'; NC='\033[0m'
 log()  { echo -e "${GREEN}✅  $1${NC}"; }
 warn() { echo -e "${YELLOW}⚠️   $1${NC}"; }
 info() { echo -e "${BLUE}ℹ️   $1${NC}"; }
-fail() { echo -e "${RED}❌  $1${NC}"; echo ""; echo "Press Enter to close."; read; exit 1; }
+pause() {
+  if [ -t 0 ] && [ -t 1 ]; then
+    echo "Press Enter to close this window."
+    read -r || true
+  fi
+}
+fail() { echo -e "${RED}❌  $1${NC}"; pause; exit 1; }
 
-clear
+if [ -t 1 ] && [ -n "${TERM:-}" ]; then clear || true; fi
 echo ""
 echo -e "${BOLD}================================================${NC}"
 echo -e "${BOLD}   Claude Count Usage — Desktop Installer      ${NC}"
@@ -52,24 +56,21 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 log "Node.js $(node -v) found"
 
-# ── 2. Check or Download Extension Files ───────────────────────
+# ── 2. Download Extension Files ────────────────────────────────
 
-IS_TEMP_SOURCE=0
-EXT_DIR="$SCRIPT_DIR"
+info "Fetching extension files from GitHub..."
+TMP_DOWNLOAD="$(mktemp -d "${TMPDIR:-/tmp}/ccu-dl.XXXXXX")" || fail "Could not create a temporary download folder."
+trap 'rm -rf -- "$TMP_DOWNLOAD"' EXIT
+ZIP_PATH="$TMP_DOWNLOAD/repo.zip"
 
-if [ ! -f "$SCRIPT_DIR/manifest_electron.json" ] || [ ! -f "$SCRIPT_DIR/desktop-injector.js" ]; then
-  info "Standalone installer detected — fetching latest extension from GitHub..."
-  TMP_DOWNLOAD="$(mktemp -d /tmp/ccu-dl-XXXXXX)"
-  IS_TEMP_SOURCE=1
-  ZIP_PATH="$TMP_DOWNLOAD/repo.zip"
+curl -fsSL "$GITHUB_ZIP" -o "$ZIP_PATH" || fail "Failed to download extension files from GitHub ($GITHUB_ZIP)."
+unzip -q "$ZIP_PATH" -d "$TMP_DOWNLOAD" || fail "Failed to unpack extension archive."
 
-  curl -sSL "$GITHUB_ZIP" -o "$ZIP_PATH" || fail "Failed to download extension files from GitHub ($GITHUB_ZIP)."
-  unzip -q "$ZIP_PATH" -d "$TMP_DOWNLOAD" || fail "Failed to unpack extension archive."
-
-  EXT_DIR="$TMP_DOWNLOAD/claude-count-usage-main"
-  [ -f "$EXT_DIR/manifest_electron.json" ] || fail "Archive did not contain expected extension files."
-  log "Downloaded latest extension files from GitHub"
+EXT_DIR="$TMP_DOWNLOAD/claude-count-usage-main"
+if [ ! -f "$EXT_DIR/manifest_electron.json" ] || [ ! -f "$EXT_DIR/desktop-injector.js" ]; then
+  fail "Archive did not contain expected extension files."
 fi
+log "Downloaded extension files from GitHub"
 
 # ── 3. Build dataclasses and configure manifest ───────────────
 
@@ -92,11 +93,6 @@ sleep 1
 info "Installing into Claude Desktop..."
 node "$EXT_DIR/desktop-injector.js" install "$EXT_DIR"
 
-# Clean up temp download if any
-if [ "$IS_TEMP_SOURCE" -eq 1 ] && [ -d "$TMP_DOWNLOAD" ]; then
-  rm -rf "$TMP_DOWNLOAD"
-fi
-
 # ── 5. Restart Claude Desktop ─────────────────────────────────
 
 info "Restarting Claude Desktop..."
@@ -115,7 +111,6 @@ if [ -d "$CLAUDE_APP" ]; then
   echo -e "  ${BOLD}Always Allow${NC}. Until it is answered Claude stays on a black screen, and the"
   echo "  prompt can open behind Claude's window. Future updates will not ask again."
   echo ""
-  xattr -cr "$CLAUDE_APP" 2>/dev/null || true
   open -a "$CLAUDE_APP"
   log "Claude Desktop launched"
 else
@@ -135,5 +130,4 @@ echo "  • In any chat   → Token / Cost / Cache stats below heading"
 echo ""
 echo "To uninstall: double-click  uninstall.command"
 echo ""
-echo "Press Enter to close this window."
-read
+pause
