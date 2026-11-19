@@ -161,6 +161,7 @@ async function applySseUsageFallback(usageData, api) {
 		const limit = stored[key];
 		if (!limit?.resetsAt || limit.resetsAt <= now) continue;
 		usageData.limits[key] = { ...limit };
+		if (key === 'session') usageData.sessionFromCache = true;
 		applied.push(key);
 	}
 

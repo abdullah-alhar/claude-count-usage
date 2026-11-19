@@ -172,11 +172,11 @@ function initSseBridge() {
 
 		const session = parseSseSessionLimit(event.data.messageLimit);
 		const weekly = parseSseWindow(event.data.messageLimit?.windows?.['7d']);
-		if (session || weekly) {
+		if (session || weekly || event.data.replyCompleted) {
 			Log('SSE usage:', 'session', session ? session.percentage + '%' : '-', 'weekly', weekly ? weekly.percentage + '%' : '-');
 			for (const listener of ssePartialUsageListeners) {
 				try {
-					listener({ session, weekly });
+					listener({ session, weekly, replyCompleted: event.data.replyCompleted === true });
 				} catch (error) {
 					Log('warn', 'SSE partial usage listener failed:', error);
 				}

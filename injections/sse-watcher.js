@@ -448,6 +448,7 @@
 	function buildPayload(records, orgId, conversationId, isRetry, overflowed) {
 		let messageLimit = null;
 		let assistantText = '';
+		let replyCompleted = false;
 		let sawNonTextBlock = false;
 		let assistantUuid = null;
 		let parentUuid = null;
@@ -463,7 +464,9 @@
 					continue;
 				}
 
-				if (evt?.type === 'message_limit') {
+				if (evt?.type === 'message_stop') {
+					replyCompleted = true;
+				} else if (evt?.type === 'message_limit') {
 					if (evt.message_limit) messageLimit = evt.message_limit;
 				} else if (evt?.type === 'message_start') {
 					assistantUuid = evt.message?.uuid || null;
@@ -498,6 +501,7 @@
 			conversationId,
 			isRetry,
 			messageLimit,
+			replyCompleted,
 			assistantText,
 			// Anything the local count can't model faithfully makes the result an estimate.
 			sawNonTextBlock: sawNonTextBlock || overflowed,

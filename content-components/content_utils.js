@@ -85,6 +85,7 @@ browser.storage.local.get('force_debug').then(result => {
 
 // Global variables that will be shared across all content scripts
 let CONFIG;
+let trackerStartupFailed = false;
 
 // Debug logs are buffered in memory and flushed on a short debounce so logging (which happens inside
 // the per-frame update loop) never blocks on storage. Up to ~1s of logs can be lost on navigation.
@@ -141,6 +142,10 @@ async function Log(...args) {
 		if (!debugUntil || debugUntil <= Date.now()) return;
 	}
 
+	writeTrackerLog(level, sender, args);
+}
+
+function writeTrackerLog(level, sender, args) {
 	if (level === "warn") {
 		console.warn("[UsageTracker]", ...args);
 	} else if (level === "error") {
@@ -256,24 +261,23 @@ async function sendBackgroundMessage(message) {
 		...message,
 		orgId: getActiveOrgId()
 	};
-	let counter = 10;
-	while (counter > 0) {
+	const maxAttempts = 10;
+	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 		try {
 			const response = await browser.runtime.sendMessage(enrichedMessage);
-			return response;
+			if (message.type !== 'getConfig' || response) return response;
 		} catch (error) {
-			// Check if it's the specific "receiving end does not exist" error
-			if (error.message?.includes('Receiving end does not exist')) {
-				await Log("warn", 'Background script not ready, retrying...', error);
-				await sleep(200);
-			} else {
-				// For any other error, throw immediately
-				throw error;
-			}
+			if (!error.message?.includes('Receiving end does not exist')) throw error;
 		}
-		counter--;
+
+		if (attempt === maxAttempts) {
+			throw new Error(`Background worker did not answer ${message.type} after ${attempt} attempts.`);
+		}
+		if (attempt === 1 && message.type === 'getConfig') {
+			writeTrackerLog('debug', 'startup', ['Waiting for tracker to start…']);
+		}
+		await sleep(200);
 	}
-	throw new Error("Failed to send message to background script after 10 retries.");
 }
 
 async function waitForElement(target, selector, maxTime = 1000) {
@@ -1401,6 +1405,43 @@ function mountToAnchor(element, anchor) {
 	return true;
 }
 
+function createTrackerErrorNotice(title, description, reason, source) {
+	const issueUrl = new URL('https://github.com/abdullah-alhar/claude-count-usage/issues/new');
+	const version = browser.runtime.getManifest().version;
+	issueUrl.searchParams.set('title', title);
+	issueUrl.searchParams.set('body', `Tracker version: ${version}\nPlatform: ${navigator.platform}\nError: ${reason}\n\nWhat happened before the error?\n`);
+	writeTrackerLog('error', source, [title, reason, issueUrl.href]);
+
+	const notice = document.createElement('div');
+	notice.className = 'ut-usage-notice ut-usage-notice-error text-xs';
+	notice.setAttribute('role', 'alert');
+	const message = document.createElement('div');
+	message.textContent = description;
+	const link = document.createElement('a');
+	link.textContent = 'Report issue on GitHub';
+	link.href = issueUrl.href;
+	link.target = '_blank';
+	link.rel = 'noopener noreferrer';
+	link.style.textDecoration = 'underline';
+	notice.append(message, link);
+	return notice;
+}
+
+function showTrackerStartupFailure(error) {
+	trackerStartupFailed = true;
+	const notice = createTrackerErrorNotice('Usage tracker failed to start', 'Usage tracker couldn’t start. Reload to try again.', error.message || String(error), 'startup');
+
+	const mount = () => {
+		if (notice.isConnected && !notice.classList.contains('ut-startup-fallback')) return;
+		const anchor = LayoutManager.getAnchor('sidebar');
+		notice.classList.toggle('ut-startup-fallback', !anchor);
+		if (anchor) mountToAnchor(notice, anchor);
+		else if (!notice.isConnected) document.body.appendChild(notice);
+	};
+	mount();
+	new MutationObserver(mount).observe(document.body, { childList: true, subtree: true });
+}
+
 // Main initialization
 async function initExtension() {
 	if (window.claudeTrackerInstance) {
@@ -1422,9 +1463,14 @@ async function initExtension() {
 	// Resolve the account UI language and pin it BEFORE assigning CONFIG. UI scripts gate their
 	// construction on CONFIG, so pinning the locale first means every static string (sidebar
 	// header, tooltips) is built in the right language.
-	const cfg = await sendBackgroundMessage({ type: 'getConfig' });
-	await applyLocale();
-	CONFIG = cfg;
+	try {
+		const cfg = await sendBackgroundMessage({ type: 'getConfig' });
+		await applyLocale();
+		CONFIG = cfg;
+	} catch (error) {
+		showTrackerStartupFailure(error);
+		return;
+	}
 	await Log("Config received...");
 
 	// Incognito conversations never have the standard sidebar structure.

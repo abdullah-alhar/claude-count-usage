@@ -1,4 +1,4 @@
-/* global CONFIG, Log, ProgressBar, sendBackgroundMessage, getActiveOrgId,
+/* global CONFIG, trackerStartupFailed, Log, ProgressBar, sendBackgroundMessage, getActiveOrgId,
    setupTooltip, getTooltipPortal, getResetTimeHTML, sleep, isMobileView, isCodePage, UsageData, isPeakHours,
    RED_WARNING, BLUE_HIGHLIGHT, SUCCESS_GREEN, getSeverityColor, SELECTORS, LayoutManager, mountToAnchor,
    localize, fmtNum, localeForIntl, onSsePartialUsage, shouldApplySseSession,
@@ -146,7 +146,7 @@ class UsageSection {
 
 		// Free plan: always show both windows. One that isn't running (never started, or reset)
 		// gets a row saying the next message starts it, instead of silently disappearing.
-		if (usageData.subscriptionTier === 'claude_free' && !usageData.isLoadError()) {
+		if (usageData.subscriptionTier === 'claude_free') {
 			for (const key of FREE_PLAN_WINDOWS) {
 				if (seenKeys.has(key) || this.hiddenKeys.has(key)) continue;
 				seenKeys.add(key);
@@ -223,7 +223,7 @@ class UsageSection {
 
 	renderNotice(usageData) {
 		// The free plan's waiting rows (see render) already say what is going on.
-		const freeRowsShown = usageData.subscriptionTier === 'claude_free' && !usageData.isLoadError();
+		const freeRowsShown = usageData.subscriptionTier === 'claude_free';
 		if (!usageData.hasNoReportedUsage() || freeRowsShown) {
 			if (this.notice) {
 				this.notice.remove();
@@ -237,40 +237,11 @@ class UsageSection {
 			this.elements.barsContainer.appendChild(this.notice);
 		}
 
-		this.notice.replaceChildren();
-
-		// Determine if this is a failed-to-load / missing data state vs genuine zero usage:
-		// 1) Explicit loadError or fetchSuccess === false flag from API layer
-		// 2) Any paid tier (Pro, Team, Max) where /usage returned nothing - paid tiers always report
-		//    limits when healthy, so an empty response on a non-free account indicates a failed or unauthorized read.
-		const isFailedToLoad = (typeof usageData.isLoadError === 'function' && usageData.isLoadError()) ||
-			usageData.loadError === true ||
-			usageData.fetchSuccess === false ||
-			usageData.subscriptionTier !== 'claude_free';
-
-		if (isFailedToLoad) {
-			// State B: Data missing / failed to load -> warning styling & distinct warning message
-			this.notice.className = 'ut-usage-notice ut-usage-notice-error text-xs';
-
-			const warningTitle = document.createElement('div');
-			warningTitle.className = 'ut-usage-error-title';
-			warningTitle.textContent = localize('usage.limits_unavailable');
-
-			const warningCaveat = document.createElement('div');
-			warningCaveat.className = 'ut-usage-notice-caveat';
-			warningCaveat.textContent = localize('usage.free_caveat');
-
-			this.notice.append(warningTitle, warningCaveat);
-		} else {
-			// State A: Genuine zero usage / fresh reset session -> neutral muted "Reset" message
-			this.notice.className = 'ut-usage-notice ut-usage-notice-reset text-text-400 text-xs';
-
-			const resetMsg = document.createElement('div');
-			resetMsg.className = 'ut-usage-reset-text';
-			resetMsg.textContent = localize('usage.reset_empty_state') || 'Reset \u2014 usage will show up here once you send a message.';
-
-			this.notice.appendChild(resetMsg);
-		}
+		this.notice.className = 'ut-usage-notice ut-usage-notice-error text-xs';
+		const warningTitle = document.createElement('div');
+		warningTitle.className = 'ut-usage-error-title';
+		warningTitle.textContent = localize('usage.limits_unavailable');
+		this.notice.replaceChildren(warningTitle);
 	}
 
 	formatResetTime(timestamp) {
@@ -330,7 +301,6 @@ class UsageUI {
 		// Element references
 		this.elements = {
 			sidebar: null,
-			chat: null,
 			tooltips: null,
 		};
 
@@ -358,6 +328,7 @@ class UsageUI {
 				const myOrgId = getActiveOrgId();
 				if (msgOrgId && myOrgId && msgOrgId !== myOrgId) return;
 				this.handleUsageUpdate(message.data.usageData);
+				this.checkReplyUsage(message.data);
 			}
 		});
 
@@ -386,6 +357,7 @@ class UsageUI {
 		await Log('UsageUI: Initializing...');
 
 		while (!CONFIG) {
+			if (trackerStartupFailed) return;
 			await sleep(100);
 		}
 
@@ -395,7 +367,6 @@ class UsageUI {
 
 		this.usageSection = new UsageSection();
 		this.elements.sidebar = await this.createSidebarElements();
-		this.elements.chat = this.createChatElements();
 		this.elements.tooltips = this.createTooltips();
 		this.attachTooltips();
 		this.setCollapsed(this.state.collapsed, false);
@@ -421,7 +392,7 @@ class UsageUI {
 		container.className = 'ut-usage-sidebar flex flex-col mb-6';
 		container.setAttribute('data-ccu-sidebar-widget', '');
 
-		const { header, toggle } = this.createHeader();
+		const { header, toggle, peakIndicator } = this.createHeader();
 		const content = document.createElement('div');
 		content.className = 'ut-usage-sidebar-content flex min-h-0 flex-col pl-2';
 
@@ -435,7 +406,7 @@ class UsageUI {
 		container.appendChild(header);
 		container.appendChild(content);
 
-		const elements = { container, content, toggle };
+		const elements = { container, content, toggle, peakIndicator };
 		toggle.addEventListener('click', () => this.setCollapsed(!this.state.collapsed));
 
 		return elements;
@@ -487,9 +458,20 @@ class UsageUI {
 			}));
 		});
 
+		// Peak hours indicator
+		const peakIndicator = document.createElement('div');
+		peakIndicator.className = 'text-text-400 text-xs';
+		peakIndicator.style.cssText = `color: ${RED_WARNING}; font-weight: bold; margin-right: 8px; display: none; user-select: none;`;
+		peakIndicator.textContent = localize('usage.peak');
+
+		const actions = document.createElement('div');
+		actions.className = 'ut-row';
+		actions.appendChild(peakIndicator);
+		actions.appendChild(settingsButton);
+
 		header.appendChild(toggle);
-		header.appendChild(settingsButton);
-		return { header, toggle };
+		header.appendChild(actions);
+		return { header, toggle, peakIndicator };
 	}
 
 	// Push the display prefs into the DOM. Hidden bars drop out of the next render (the section's
@@ -539,65 +521,6 @@ class UsageUI {
 		if (persist) browser.storage.local.set({ usageSectionCollapsed: collapsed });
 	}
 
-	createChatElements() {
-		// Stat line container
-		const statLine = document.createElement('div');
-		statLine.id = 'ut-chat-stat-line';
-		statLine.className = 'ut-row';
-		statLine.style.paddingLeft = '6px'; // Align with chatbox text input
-
-		// Left container (usage)
-		const leftContainer = document.createElement('div');
-		leftContainer.id = 'ut-stat-left';
-		leftContainer.className = 'ut-row ut-statline-left';
-
-		const usageDisplay = document.createElement('div');
-		usageDisplay.className = 'text-text-400 text-xs';
-		usageDisplay.style.whiteSpace = 'nowrap';
-		if (!isMobileView()) usageDisplay.style.marginRight = '8px';
-		usageDisplay.textContent = localize('usage.session_inline');
-
-		leftContainer.appendChild(usageDisplay);
-
-		// Progress bar (desktop only)
-		let progressBar = null;
-		if (!isMobileView()) {
-			progressBar = new ProgressBar({ width: '100%' });
-			progressBar.track.classList.remove('bg-bg-500');
-			progressBar.track.classList.add('bg-bg-200');
-			leftContainer.appendChild(progressBar.container);
-		}
-
-		// Spacer
-		const spacer = document.createElement('div');
-		spacer.className = 'ut-flex-1';
-
-		// Right container (for LengthUI)
-		const rightContainer = document.createElement('div');
-		rightContainer.id = 'ut-stat-right';
-		rightContainer.className = 'ut-row';
-
-		// Peak hours indicator
-		const peakIndicator = document.createElement('div');
-		peakIndicator.className = 'text-text-400 text-xs';
-		peakIndicator.style.cssText = `color: ${RED_WARNING}; font-weight: bold; margin-right: 8px; display: none; user-select: none;`;
-		peakIndicator.textContent = localize('usage.peak');
-
-		// Reset time display
-		const resetDisplay = document.createElement('div');
-		resetDisplay.className = 'text-text-400 text-xs';
-		if (!isMobileView()) resetDisplay.style.marginRight = '8px';
-
-		rightContainer.appendChild(peakIndicator);
-		rightContainer.appendChild(resetDisplay);
-
-		statLine.appendChild(leftContainer);
-		statLine.appendChild(spacer);
-		statLine.appendChild(rightContainer);
-
-		return { statLine, usageDisplay, progressBar, peakIndicator, resetDisplay };
-	}
-
 	createTooltips() {
 		const create = (text) => {
 			const tooltip = document.createElement('div');
@@ -620,16 +543,12 @@ class UsageUI {
 		const peakEnd = formatLocal(18);
 
 		return {
-			usage: create(localize('usage.tooltip_usage')),
-			timer: create(localize('usage.tooltip_timer')),
 			peak: create(localize('usage.tooltip_peak', { start: peakStart, end: peakEnd })),
 		};
 	}
 
 	attachTooltips() {
-		setupTooltip(this.elements.chat.usageDisplay, this.elements.tooltips.usage);
-		setupTooltip(this.elements.chat.resetDisplay, this.elements.tooltips.timer);
-		setupTooltip(this.elements.chat.peakIndicator, this.elements.tooltips.peak);
+		setupTooltip(this.elements.sidebar.peakIndicator, this.elements.tooltips.peak);
 	}
 
 	// ========== MOUNT (attach to page) ==========
@@ -670,128 +589,20 @@ class UsageUI {
 		this.sidebarObserver.observe(sidebar, { childList: true, subtree: true });
 	}
 
-	mountChatArea() {
-		const anchor = LayoutManager.getAnchor('chatArea');
-		if (!anchor) return false;
-		return mountToAnchor(this.elements.chat.statLine, anchor);
-	}
-
 	// ========== RENDER (state → DOM) ==========
 
 	renderAll() {
 		this.renderSidebar();
-		this.renderChatArea();
 	}
 
 	renderSidebar() {
 		const { usageData } = this.state;
 		if (!usageData) return;
+		const session = usageData.limits.session;
+		const showPeak = session && isPeakHours() && !isFreeWindowWaiting(usageData, session)
+			&& !usageData.isSpendingCredits(this.state.currentModel);
+		this.elements.sidebar.peakIndicator.style.display = showPeak ? '' : 'none';
 		this.usageSection.render(usageData);
-	}
-
-	// The stat line row collapses to nothing once its children are hidden, so the container itself
-	// stays in the DOM and LengthUI.mountStatLine() keeps finding #ut-stat-right.
-	setChatUsageVisible(visible) {
-		const { usageDisplay, progressBar, peakIndicator, resetDisplay } = this.elements.chat;
-		const display = visible ? '' : 'none';
-
-		usageDisplay.style.display = display;
-		if (progressBar) progressBar.container.style.display = display;
-
-		// The countdown is session-specific, so it tracks the session limit rather than the row as a
-		// whole. The credits branch renders with no session at all on a credit-funded model, and
-		// would otherwise print "Reset in: Not set" beside a perfectly good Extra usage bar. Same
-		// condition renderResetTimes() uses, so the two can't disagree about it.
-		const session = this.state.usageData?.limits.session;
-		resetDisplay.style.display = visible && session ? '' : 'none';
-
-		// Owned by the render branches below while visible; forced off here so it can't outlive them.
-		if (!visible) peakIndicator.style.display = 'none';
-	}
-
-	renderChatArea() {
-		const { usageData } = this.state;
-		const { usageDisplay, progressBar, peakIndicator, resetDisplay } = this.elements.chat;
-
-		if (!usageData) return;
-
-		// Read the picker directly rather than this.state.currentModel, which stays null until
-		// checkModelChange() first polls (up to 1s after mount). Reused for the weekly marker below.
-		const modelSelector = document.querySelector(SELECTORS.MODEL_SELECTOR);
-		const modelName = modelSelector?.textContent?.trim() || null;
-
-		// Nothing to price this against (the free plan, where /usage reports no limits at all).
-		// Returning here without touching the DOM would leave whatever was last written on screen:
-		// that is how a free account ended up showing a stale "Session: 2%" - set by an SSE partial
-		// a moment earlier - next to "Reset in: Not set". Hide the usage half outright instead.
-		const session = isFreeWindowWaiting(usageData, usageData.limits.session) ? null : usageData.limits.session;
-		const hasUsage = !!session || usageData.isSpendingCredits(modelName);
-		this.setChatUsageVisible(hasUsage);
-		if (!hasUsage) return;
-
-		// Show extra usage instead of the session bar whenever credits are what's being spent —
-		// either the plan limits are maxed, or the selected model is credit-funded (e.g. Fable
-		// on a tier where it has no plan-scoped weekly limit).
-		if (usageData.isSpendingCredits(modelName)) {
-			const effectiveTotal = usageData.getExtraUsageEffectiveTotal();
-			const used = usageData.extraUsage.usedCredits;
-			const pct = effectiveTotal > 0 ? (used / effectiveTotal) * 100 : 0;
-
-			const color = getSeverityColor(pct);
-			usageDisplay.innerHTML = `${localize('usage.extra_inline')} <span class="ut-statline-pct" style="color: ${color}">${pct.toFixed(0)}%</span>`;
-			peakIndicator.style.display = 'none';
-
-			if (!isMobileView() && progressBar) {
-				progressBar.updateProgress(pct, 100);
-
-				const usedDollars = (used / 100).toFixed(2);
-				const totalDollars = (effectiveTotal / 100).toFixed(2);
-				progressBar.tooltip.textContent = localize('usage.tooltip_dollars', { used: usedDollars, total: totalDollars });
-				progressBar.clearMarker();
-			}
-
-			// Show session reset time (still relevant — when session resets, user goes back to included usage)
-			const resetInfo = usageData.getSessionResetInfo();
-			resetDisplay.innerHTML = getResetTimeHTML(resetInfo);
-			return;
-		}
-
-		// Normal session display
-		const isResetting = session.resetsAt && session.resetsAt <= Date.now();
-		const color = isResetting ? SUCCESS_GREEN : getSeverityColor(session.percentage);
-		const pctText = isResetting ? localize('common.resetting') : `${session.percentage.toFixed(0)}%`;
-		usageDisplay.innerHTML = `${localize('usage.session_inline')} <span class="ut-statline-pct" style="color: ${color}">${pctText}</span>`;
-		peakIndicator.style.display = isPeakHours() ? '' : 'none';
-
-		// Progress bar (desktop only)
-		if (!isMobileView() && progressBar) {
-			progressBar.updateProgress(session.percentage, 100);
-
-			// Override tooltip with estimated token values
-			let cap = CONFIG.ESTIMATED_CAPS?.[usageData.subscriptionTier]?.session;
-			if (isPeakHours()) cap = cap / CONFIG.PEAK_SESSION_MULTIPLIER;
-			if (cap) {
-				const used = Math.round((session.percentage / 100) * cap);
-				progressBar.tooltip.textContent = localize('usage.tooltip_tokens', { used: fmtNum(used), cap: fmtNum(cap), pct: session.percentage.toFixed(0) });
-			} else {
-				progressBar.tooltip.textContent = localize('usage.tooltip_pct_used', { pct: session.percentage.toFixed(0) });
-			}
-
-			// Add weekly marker (filter by current model)
-			const weeklyLimit = usageData.getBindingWeeklyLimit(modelName);
-			if (weeklyLimit) {
-				const markerKeys = { weekly: 'usage.marker_all', sonnetWeekly: 'usage.marker_sonnet', opusWeekly: 'usage.marker_opus', fableWeekly: 'usage.marker_fable' };
-				const markerName = markerKeys[weeklyLimit.key] ? localize(markerKeys[weeklyLimit.key]) : localize('usage.marker_fallback');
-				const markerLabel = `${markerName}: ${weeklyLimit.percentage.toFixed(0)}%`;
-				progressBar.setMarker(weeklyLimit.percentage, markerLabel);
-			} else {
-				progressBar.clearMarker();
-			}
-		}
-
-		// Reset time (session)
-		const resetInfo = usageData.getSessionResetInfo();
-		resetDisplay.innerHTML = getResetTimeHTML(resetInfo);
 	}
 
 	renderResetTimes() {
@@ -800,21 +611,8 @@ class UsageUI {
 
 		// Sidebar
 		this.usageSection.renderResetTimes(usageData);
-
-		// Chat area. Skipped with no session limit: this runs every second and would otherwise keep
-		// writing "Reset in: Not set" into the display renderChatArea() hid.
-		const session = usageData.limits.session;
-		if (!session) return;
-		if (isFreeWindowWaiting(usageData, session)) {
-			this.setChatUsageVisible(false);
-			return;
-		}
-		const resetInfo = usageData.getSessionResetInfo();
-		this.elements.chat.resetDisplay.innerHTML = getResetTimeHTML(resetInfo);
-
-		if (session.resetsAt && session.resetsAt <= Date.now()) {
-			const { usageDisplay } = this.elements.chat;
-			usageDisplay.innerHTML = `${localize('usage.session_inline')} <span class="ut-statline-pct" style="color: ${SUCCESS_GREEN}">${localize('common.resetting')}</span>`;
+		if (isFreeWindowWaiting(usageData, usageData.limits.session)) {
+			this.elements.sidebar.peakIndicator.style.display = 'none';
 		}
 	}
 
@@ -837,7 +635,9 @@ class UsageUI {
 	// On the free plan the stream is the only source for the weekly window too, so it is applied
 	// here as well instead of waiting for the background round trip (up to the post-stream
 	// cooldown). Paid plans keep taking weekly from /usage, which the stream's 7d can differ from.
-	handleSsePartialUsage({ session, weekly }) {
+	handleSsePartialUsage({ session, weekly, replyCompleted }) {
+		if (session) this.clearReplyWarning();
+		else if (replyCompleted) this.replyAwaitingUsage = { at: Date.now(), orgId: getActiveOrgId() };
 		if (!this.uiReady || !this.state.usageData) return;
 		const limits = this.state.usageData.limits;
 		let changed = false;
@@ -850,6 +650,34 @@ class UsageUI {
 			changed = true;
 		}
 		if (changed) this.renderAll();
+	}
+
+	clearReplyWarning() {
+		this.replyAwaitingUsage = null;
+		this.replyWarning?.remove();
+		this.replyWarning = null;
+	}
+
+	checkReplyUsage({ usageData, refreshStartedAt, sessionFromCache }) {
+		if (!this.replyAwaitingUsage) return;
+		if (this.replyAwaitingUsage.orgId !== getActiveOrgId()) {
+			this.clearReplyWarning();
+			return;
+		}
+		if (!this.uiReady || refreshStartedAt < this.replyAwaitingUsage.at || !refreshStartedAt) return;
+		const session = usageData.limits?.session;
+		if ((!sessionFromCache && session && (!session.resetsAt || session.resetsAt > Date.now()))
+			|| this.state.usageData?.isSpendingCredits(this.state.currentModel)) {
+			this.clearReplyWarning();
+			return;
+		}
+		if (this.replyWarning) return;
+		const reason = usageData.loadError ? 'The usage refresh failed after the reply.'
+			: 'The completed reply and follow-up refresh supplied no fresh session reading.';
+		this.replyWarning = createTrackerErrorNotice('Session usage unavailable after reply',
+			'Claude replied, but the tracker couldn’t confirm your session usage. Check the debug log in Usage settings.',
+			reason, 'usage');
+		this.elements.sidebar.content.prepend(this.replyWarning);
 	}
 
 	// ========== CHECKS ==========
@@ -908,7 +736,7 @@ class UsageUI {
 
 		if (modelName && modelName !== this.state.currentModel) {
 			this.state.currentModel = modelName;
-			this.renderChatArea();
+			this.renderSidebar();
 		}
 	}
 
@@ -916,7 +744,6 @@ class UsageUI {
 		const peak = isPeakHours();
 		if (peak !== this.wasPeakHours) {
 			this.wasPeakHours = peak;
-			this.renderChatArea();
 			this.renderSidebar();
 		}
 	}
@@ -939,7 +766,6 @@ class UsageUI {
 				mountPending = false;
 				lastMountAt = Date.now();
 				if (!this.sidebarRoot?.isConnected) this.mountSidebar();
-				this.mountChatArea();
 			});
 			const wait = MIN_MOUNT_GAP_MS - (Date.now() - lastMountAt);
 			if (wait > 0) setTimeout(mount, wait);

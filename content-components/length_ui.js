@@ -1,4 +1,4 @@
-/* global CONFIG, Log, setupTooltip, getTooltipPortal, getResetTimeHTML, sleep, sendBackgroundMessage, getActiveOrgId,
+/* global CONFIG, trackerStartupFailed, Log, setupTooltip, getTooltipPortal, getResetTimeHTML, sleep, sendBackgroundMessage, getActiveOrgId,
    isMobileView, isCodePage, UsageData, ConversationData, getConversationId, getCurrentModel,
    getCurrentModelVersion, SUCCESS_GREEN, getSeverityColorForLimit, getSeverityColorForRemaining, SELECTORS,
    LayoutManager, mountToAnchor, localize, fmtNum, onSsePartialUsage, shouldApplySseSession */
@@ -20,7 +20,6 @@ class LengthUI {
 		// Element references
 		this.elements = {
 			titleArea: null,
-			statLine: null,
 			tooltips: null,
 		};
 
@@ -52,18 +51,17 @@ class LengthUI {
 			}
 		});
 
-		onSsePartialUsage((update) => this.handleSsePartialUsage(update));
 	}
 
 	async init() {
 		await Log('LengthUI: Initializing...');
 
 		while (!CONFIG) {
+			if (trackerStartupFailed) return;
 			await sleep(100);
 		}
 
 		this.elements.titleArea = this.createTitleAreaElements();
-		this.elements.statLine = this.createStatLineElements();
 		this.elements.tooltips = this.createTooltips();
 		this.attachTooltips();
 
@@ -103,15 +101,6 @@ class LengthUI {
 		return { container, length, cost, cached };
 	}
 
-	createStatLineElements() {
-		const estimate = document.createElement('div');
-		estimate.className = 'text-text-400 text-xs';
-		estimate.style.cursor = 'help';
-		// No margin-right so it aligns with the send button
-
-		return { estimate };
-	}
-
 	createTooltips() {
 		const create = (text) => {
 			const tooltip = document.createElement('div');
@@ -128,7 +117,6 @@ class LengthUI {
 			length: create(localize('length.tooltip_length')),
 			cost: create(localize('length.tooltip_cost')),
 			cached: create(localize('length.tooltip_cached')),
-			estimate: create(localize('length.tooltip_estimate')),
 		};
 	}
 
@@ -136,7 +124,6 @@ class LengthUI {
 		setupTooltip(this.elements.titleArea.length, this.elements.tooltips.length);
 		setupTooltip(this.elements.titleArea.cost, this.elements.tooltips.cost);
 		setupTooltip(this.elements.titleArea.cached, this.elements.tooltips.cached);
-		setupTooltip(this.elements.statLine.estimate, this.elements.tooltips.estimate);
 	}
 
 	// ========== MOUNT (attach to page) ==========
@@ -145,24 +132,6 @@ class LengthUI {
 		const anchor = LayoutManager.getAnchor('titleArea');
 		if (!anchor) return false;
 		return mountToAnchor(this.elements.titleArea.container, anchor);
-	}
-
-	mountStatLine() {
-		const statRightContainer = document.getElementById('ut-stat-right');
-		if (!statRightContainer) return false;
-
-		if (isCodePage()) {
-			if (statRightContainer.contains(this.elements.statLine.estimate)) {
-				this.elements.statLine.estimate.remove();
-			}
-			return true;
-		}
-
-		if (!statRightContainer.contains(this.elements.statLine.estimate)) {
-			statRightContainer.appendChild(this.elements.statLine.estimate);
-		}
-
-		return true;
 	}
 
 	// ========== RENDER (state → DOM) ==========
@@ -176,7 +145,6 @@ class LengthUI {
 			'| stored on conversation:', this.state.conversationData?.modelVersion,
 			'| isCurrentlyCached:', this.state.conversationData?.isCurrentlyCached(this.state.currentModelVersion));
 		this.renderCostAndLength();
-		this.renderEstimate();
 	}
 
 	renderCostAndLength() {
@@ -297,62 +265,6 @@ class LengthUI {
 		return false;
 	}
 
-	renderEstimate() {
-		const { estimate } = this.elements.statLine;
-
-		if (isCodePage()) {
-			estimate.innerHTML = '';
-			return;
-		}
-
-		const { usageData, conversationData, currentModel, currentModelVersion } = this.state;
-
-		// No limits reported at all (the free plan) - there is nothing to divide the cost into, and
-		// a lone "Messages left: N/A" beside the hidden usage bar reads as breakage. Drop it.
-		if (usageData?.hasNoReportedUsage()) {
-			estimate.innerHTML = '';
-			return;
-		}
-
-		const msgPrefix = isMobileView() ? localize('length.msgs_left_mobile') : localize('length.msgs_left_desktop');
-
-		if (!getConversationId() || !usageData || !conversationData) {
-			estimate.innerHTML = `${msgPrefix} <span>${localize('common.na')}</span>`;
-			return;
-		}
-
-		const messageCost = conversationData.getWeightedFutureCost(currentModel, currentModelVersion);
-		const limiting = usageData.getLimitingFactor(messageCost);
-
-		// Estimate from dollars when credits are what's actually being spent — either the regular
-		// limits are exhausted, or the model is credit-funded (in which case `limiting` reports a
-		// healthy plan limit the message will never consume).
-		const spendingCredits = usageData.isSpendingCredits(currentModel);
-		if ((spendingCredits || !limiting || limiting.messagesLeft <= 0) && usageData.hasExtraUsage()) {
-			const costPerMessageDollars = this.extraUsageDollars(conversationData, currentModel, currentModelVersion);
-
-			if (costPerMessageDollars > 0) {
-				const remainingDollars = usageData.getExtraUsageRemaining() / 100;
-				const messagesLeft = remainingDollars / costPerMessageDollars;
-				const estimateValue = messagesLeft.toFixed(1);
-				const color = getSeverityColorForRemaining(parseFloat(estimateValue), CONFIG.WARNING.MESSAGES_LEFT);
-				estimate.innerHTML = `${msgPrefix} <span style="color: ${color}">${estimateValue}</span>`;
-				return;
-			}
-		}
-
-		// Regular limits estimate — skipped for a credit-funded model, whose messages don't draw
-		// on the plan limits at all, so falling back to them would report a plausible but wrong number.
-		if (!usageData.isModelCreditFunded(currentModel) && limiting && limiting.messagesLeft > 0) {
-			const estimateValue = limiting.messagesLeft.toFixed(1);
-			const color = getSeverityColorForRemaining(parseFloat(estimateValue), CONFIG.WARNING.MESSAGES_LEFT);
-			estimate.innerHTML = `${msgPrefix} <span style="color: ${color}">${estimateValue}</span>`;
-			return;
-		}
-
-		estimate.innerHTML = `${msgPrefix} <span>${localize('common.na')}</span>`;
-	}
-
 	// ========== MESSAGE HANDLERS ==========
 
 	handleUsageUpdate(usageDataJSON) {
@@ -367,18 +279,6 @@ class LengthUI {
 		if (this.state.conversationData) {
 			this.renderCostAndLength();
 		}
-		this.renderEstimate();
-	}
-
-	// Session usage read straight off the completion stream, about a second ahead of the full
-	// fetch. Only the estimate depends on it — the cost display keys off the fields the stream
-	// doesn't carry, so it can wait.
-	handleSsePartialUsage({ session }) {
-		if (!this.uiReady || !this.state.usageData || !session) return;
-		if (!shouldApplySseSession(this.state.usageData.limits.session, session)) return;
-
-		this.state.usageData.limits.session = session;
-		this.renderEstimate();
 	}
 
 	handleConversationUpdate(conversationDataJSON) {
@@ -418,7 +318,6 @@ class LengthUI {
 					});
 				}
 				this.mountTitleArea();
-				this.mountStatLine();
 			}
 
 			requestAnimationFrame(update);
@@ -443,13 +342,11 @@ class LengthUI {
 			this.state.conversationData = null;
 			// Clear old data to avoid showing wrong info
 			this.renderCostAndLength();
-			this.renderEstimate();
 		}
 
 		if (isHomePage && this.state.conversationData !== null) {
 			this.state.conversationData = null;
 			this.renderCostAndLength();
-			this.renderEstimate();
 		}
 	}
 
@@ -465,7 +362,6 @@ class LengthUI {
 			this.state.currentModelVersion = newModelVersion;
 			if (this.state.conversationData) {
 				this.renderCostAndLength();
-				this.renderEstimate();
 			}
 		}
 	}

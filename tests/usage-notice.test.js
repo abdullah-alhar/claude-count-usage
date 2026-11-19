@@ -358,32 +358,9 @@ function runRealUINoticeTests(UsageData, UsageSection) {
 	section.renderNotice(freeZero);
 	assert(section.notice === null, 'No notice for a healthy free tier with no reported limits (rows explain it)');
 
-	// ─── Scenario 2: State B - API Load Error / Network Failure on Free Tier ───
 	const freeError = UsageData.fromAPIResponse({ status: 500 }, 'claude_free');
 	section.renderNotice(freeError);
-
-	assert(
-		section.notice.className.includes('ut-usage-notice-error'),
-		'State B uses ut-usage-notice-error class'
-	);
-	assert(
-		!section.notice.className.includes('ut-usage-notice-reset'),
-		'State B does NOT have ut-usage-notice-reset class'
-	);
-
-	const errorTitleEl = section.notice.querySelector('.ut-usage-error-title');
-	assert(errorTitleEl !== null, 'State B contains .ut-usage-error-title');
-	assert(
-		errorTitleEl.textContent === 'Usage data unavailable. Try reloading the page.',
-		'State B displays the unavailable error message'
-	);
-
-	const caveatEl = section.notice.querySelector('.ut-usage-notice-caveat');
-	assert(caveatEl !== null, 'State B contains .ut-usage-notice-caveat');
-	assert(
-		caveatEl.textContent.includes('Anthropic no longer reports them on the free plan'),
-		'State B displays caveat message'
-	);
+	assert(section.notice === null, 'Free accounts can receive their first reading from a reply');
 
 	// ─── Scenario 3: State B - Paid Tier with Unexpected Missing Data ───
 	// Pro accounts always have active limits; empty limits indicates an unauthorized/failed fetch
@@ -412,7 +389,7 @@ function runRealUINoticeTests(UsageData, UsageSection) {
 
 	// ─── Scenario 5: Dynamic State Transitions ───
 	// Verify notice transitions cleanly: Error -> Reset -> Normal -> Error
-	section.renderNotice(freeError);
+	section.renderNotice(proEmpty);
 	assert(section.notice.className.includes('ut-usage-notice-error'), 'Transitioned to error');
 
 	section.renderNotice(freeZero);
@@ -421,7 +398,7 @@ function runRealUINoticeTests(UsageData, UsageSection) {
 	section.renderNotice(normalUsage);
 	assert(section.notice === null, 'Notice removed on normal usage');
 
-	section.renderNotice(freeError);
+	section.renderNotice(proEmpty);
 	assert(section.notice !== null && section.notice.className.includes('ut-usage-notice-error'), 'Re-opened as error');
 }
 
@@ -431,7 +408,7 @@ function runFreePlanWaitingRowTests(UsageData, UsageSection) {
 		const bar = section.limitBars.get(key);
 		return bar ? { pct: bar.percentage.textContent, reset: bar.resetTime.textContent, progress: bar.progressBar.progress } : null;
 	};
-	const WAIT = 'Starts with your next message';
+	const WAIT = 'Send a message';
 
 	// Both windows finished / never started
 	const section = new UsageSection();
@@ -470,11 +447,10 @@ function runFreePlanWaitingRowTests(UsageData, UsageSection) {
 	assert(!hiddenSection.limitBars.has('weekly') && hiddenSection.limitBars.has('session'),
 		'free: a bar hidden in settings is not brought back as a waiting row');
 
-	// Free load error still shows the error notice, not waiting rows
 	const errSection = new UsageSection();
 	errSection.render(UsageData.fromAPIResponse({ status: 500 }, 'claude_free'));
-	assert(errSection.limitBars.size === 0 && errSection.notice && errSection.notice.className.includes('ut-usage-notice-error'),
-		'free load error: error notice, no waiting rows');
+	assert(!errSection.notice && ['session', 'weekly'].every(key => rowText(errSection, key)?.reset === WAIT),
+		'free load error: both rows prompt for a message until the stream provides usage');
 
 	// Paid plans are unchanged: an expired window still shows the resetting dash, no waiting rows
 	const paidSection = new UsageSection();

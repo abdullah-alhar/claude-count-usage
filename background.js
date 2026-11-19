@@ -205,7 +205,7 @@ async function requestActiveOrgId(tab) {
 //#region Messaging
 
 // Updates all tabs with usage data only
-async function updateAllTabsWithUsage(usageData = null) {
+async function updateAllTabsWithUsage(usageData = null, refreshStartedAt = null) {
 	await Log("Updating all tabs with usage data");
 	const tabs = await browser.tabs.query({ url: "*://claude.ai/*" });
 
@@ -227,7 +227,9 @@ async function updateAllTabsWithUsage(usageData = null) {
 			sendTabMessage(tab.id, {
 				type: 'updateUsage',
 				data: {
-					usageData: data.toJSON()
+					usageData: data.toJSON(),
+					refreshStartedAt,
+					sessionFromCache: data.sessionFromCache === true
 				}
 			}).catch(error => Log("warn", `Failed to push usage to tab ${tab.id}:`, error));
 		} catch (error) {
@@ -354,12 +356,13 @@ messageRegistry.register('getMonkeypatchPatterns', () => INTERCEPT_PATTERNS);
 // Unified usage fetch path — queries api.getUsageData(), updates notifications and all tabs.
 // Records lastUsageFetchMs on every successful fetch so callers can throttle auto-refetches.
 async function refreshUsage(api, orgId) {
+	const refreshStartedAt = Date.now();
 	const usageData = await api.getUsageData();
 	// Record the timestamp regardless of whether the response was an error — a 500 still consumed
 	// the request, and we don't want the next message to immediately retry a broken endpoint.
 	lastUsageFetchMs = Date.now();
 	await scheduleResetNotifications(orgId, usageData);
-	await updateAllTabsWithUsage(usageData);
+	await updateAllTabsWithUsage(usageData, refreshStartedAt);
 	return usageData;
 }
 

@@ -86,21 +86,16 @@ class SettingsCard {
 		card.style.display = 'flex';
 		if (position) this.lastPosition = position;
 
-		if (this.lastPosition) {
-			card.style.top = `${this.lastPosition.top}px`;
-			card.style.left = `${this.lastPosition.left}px`;
-		}
-
-		// Ensure card stays within viewport
-		requestAnimationFrame(() => {
-			const rect = card.getBoundingClientRect();
-			if (rect.right > window.innerWidth - 8) {
-				card.style.left = `${Math.max(8, window.innerWidth - rect.width - 8)}px`;
-			}
-			if (rect.bottom > window.innerHeight - 8) {
-				card.style.top = `${Math.max(8, window.innerHeight - rect.height - 8)}px`;
-			}
-		});
+		const fitToWindow = () => {
+			const { top = 8, left = 8 } = this.lastPosition || {};
+			card.style.top = `${Math.max(8, Math.min(top, window.innerHeight - card.offsetHeight - 8))}px`;
+			card.style.left = `${Math.max(8, Math.min(left, window.innerWidth - card.offsetWidth - 8))}px`;
+		};
+		fitToWindow();
+		this.sizeObserver = new ResizeObserver(fitToWindow);
+		this.sizeObserver.observe(card);
+		window.addEventListener('resize', fitToWindow);
+		this.onWindowResize = fitToWindow;
 
 		// Load current values
 		await this.loadCurrentState();
@@ -114,6 +109,8 @@ class SettingsCard {
 	close() {
 		if (!this.isOpen) return;
 		this.isOpen = false;
+		this.sizeObserver.disconnect();
+		window.removeEventListener('resize', this.onWindowResize);
 
 		if (this.elements) {
 			this.elements.card.style.display = 'none';

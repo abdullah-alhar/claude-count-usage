@@ -1201,8 +1201,19 @@ console.log('\n=== 16. handleSsePartialUsage(): free plan weekly goes live ===')
 	assert(paid.ui.state.usageData.limits.session?.percentage === 12, 'paid: session still applies live');
 	assert(!paid.ui.state.usageData.limits.weekly, 'paid: weekly keeps coming from /usage only');
 
-	const bridge = fs.readFileSync(path.join(rootDir, 'content-components', 'sse_bridge.js'), 'utf8');
-	assert(/listener\(\{ session, weekly \}\)/.test(bridge), 'sse_bridge passes both windows to listeners');
+	sandbox.getActiveOrgId = () => 'org-1';
+	let warnings = 0;
+	sandbox.createTrackerErrorNotice = () => { warnings++; return { remove() {} }; };
+	free.ui.elements.sidebar = { content: { prepend() {} } };
+	free.ui.handleSsePartialUsage({ replyCompleted: true });
+	const afterReply = free.ui.replyAwaitingUsage.at;
+	const cached = { usageData: free.ui.state.usageData, sessionFromCache: true };
+	free.ui.checkReplyUsage({ ...cached, refreshStartedAt: afterReply - 1 });
+	assert(warnings === 0, 'an earlier refresh cannot diagnose the completed reply');
+	free.ui.checkReplyUsage({ ...cached, refreshStartedAt: afterReply });
+	assert(warnings === 1, 'a cached session after a reply with missing usage shows a warning');
+	free.ui.handleSsePartialUsage({ session: { percentage: 12, resetsAt } });
+	assert(!free.ui.replyWarning && !free.ui.replyAwaitingUsage, 'even an unchanged fresh reading clears the warning');
 }
 
 // ─── 17. Mac re-sign keeps Cowork's virtualization entitlement ─────────────

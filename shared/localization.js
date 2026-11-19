@@ -70,7 +70,7 @@ export const MESSAGES = {
 		"settings.title": "Settings",
 		"settings.refresh_label": "Update usage now",
 		"settings.section_more": "More",
-		"usage.starts_next_message": "Starts with your next message",
+		"usage.starts_next_message": "Send a message",
 		"settings.close": "Close",
 		"settings.clear": "Clear",
 		"settings.display_label": "Visible Bars",

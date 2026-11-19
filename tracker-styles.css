@@ -168,32 +168,6 @@
 	flex-grow: 1;
 }
 
-/* Composer stat line: the session bar gets a fixed share of the line so it never
-   resizes when the right-hand text (messages left / reset time / PEAK) changes width. */
-.ut-statline-left {
-	flex: 0 1 35%;
-}
-
-.ut-statline-pct {
-	display: inline-block;
-	min-width: 30px;
-}
-
-/* Optical centering: flex centers the 6px track on the text's line box, but the
-   digits' visual center sits a touch above it, so the bar reads high. Nudge down.
-   .ut-progress is already position: relative (for the weekly marker). */
-.ut-statline-left .ut-progress {
-	top: 1px;
-}
-
-#ut-stat-right {
-	flex: 0 0 auto;
-}
-
-#ut-stat-right > * {
-	white-space: nowrap;
-}
-
 .ut-justify-between {
 	justify-content: space-between;
 }
@@ -382,6 +356,7 @@
     position: fixed;
     display: flex;
     flex-direction: column;
+    box-sizing: border-box;
     width: 316px;
     max-width: calc(100vw - 16px);
     max-height: calc(100vh - 16px);
@@ -405,6 +380,7 @@
 }
 
 .ut-settings-header {
+    flex: none;
     display: flex;
     align-items: center;
     gap: 8px;
@@ -441,6 +417,8 @@
 }
 
 .ut-settings-body {
+    flex: 1 1 auto;
+    min-height: 0;
     overflow-y: auto;
     overscroll-behavior: contain;
     padding: 4px 12px 14px;
@@ -808,4 +786,14 @@
     vertical-align: middle;
     user-select: none;
     opacity: 0.8;
+}
+
+
+.ut-startup-fallback {
+	position: fixed;
+	bottom: 1rem;
+	left: 1rem;
+	z-index: 9999;
+	max-width: 20rem;
+	background-color: Canvas;
 }
