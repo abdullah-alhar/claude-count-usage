@@ -9,6 +9,8 @@ on:
       tag:
         description: 'Tag to release (e.g. v1.7.0)'
         required: true
+        description: 'Draft version (leave blank to use the desktop manifest)'
+        required: false
 
 permissions:
   contents: write
@@ -32,6 +34,21 @@ jobs:
           MANIFEST=$(node -p "require('./manifest.json').version")
           if [ "$VERSION" != "$MANIFEST" ]; then
             echo "::error::Tag $TAG does not match manifest.json version $MANIFEST"
+          VERSION=$(node -p "require('./manifest_electron.json').version")
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            printf '::error::Desktop manifest version %q must use x.y.z.\n' "$VERSION"
+            exit 1
+          fi
+          EXPECTED_TAG="v$VERSION"
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            REQUESTED_TAG=$(printf '%s' "$REQUESTED_TAG" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+            RELEASE_TAG=${REQUESTED_TAG:-$EXPECTED_TAG}
+            RELEASE_TAG="v${RELEASE_TAG#[vV]}"
+          else
+            RELEASE_TAG="$GITHUB_REF_NAME"
+          fi
+          if [[ "$RELEASE_TAG" != "$EXPECTED_TAG" ]]; then
+            printf '::error::Release tag %q does not match the desktop manifest. Use %s for this revision.\n' "$RELEASE_TAG" "$EXPECTED_TAG"
             exit 1
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
