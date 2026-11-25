@@ -14,6 +14,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { pathToFileURL } = require('url');
 const { app, session, Notification, webContents } = require('electron');
 const updater = require('./ccu-update.js');
 
@@ -23,6 +24,7 @@ const MARKER = '// __CLAUDE_COUNT_USAGE_WRAPPER__';
 const ROOT = updater.ccuRoot();
 const USER_EXTENSION_DIR = updater.extensionDir(ROOT);
 const PREVIOUS_EXTENSION_DIR = path.join(ROOT, 'extension.old');
+const STARTUP_STATE = updater.readState(ROOT);
 const BUNDLED_EXTENSION_DIR = path.join(process.resourcesPath || '', 'injected-extension');
 
 // ── Startup timing log ──────────────────────────────────────
@@ -75,67 +77,55 @@ function firstExistingDir(dirs) {
   return null;
 }
 
+const extensionsBySession = new WeakMap();
+
 async function loadExtensionFrom(dir, sess) {
   const loader = sess.extensions && typeof sess.extensions.loadExtension === 'function' ? sess.extensions : sess;
-  await loader.loadExtension(dir, { allowFileAccess: true });
+  const version = updater.readExtensionVersion(dir);
+  const storage = sess.getStoragePath?.();
+  const extensionId = updater.extensionIdForPath(dir);
+  if (storage && dir !== BUNDLED_EXTENSION_DIR) {
+    const source = dir === PREVIOUS_EXTENSION_DIR ? USER_EXTENSION_DIR : BUNDLED_EXTENSION_DIR;
+    updater.migrateExtensionSettings(storage, source, dir);
+  }
+  if (dir === USER_EXTENSION_DIR && (STARTUP_STATE.pendingRestart || STARTUP_STATE.runningVersion !== version)) {
+    await sess.clearStorageData({ origin: 'chrome-extension://' + extensionId, storages: ['serviceworkers'] });
+  }
+  const extension = await loader.loadExtension(dir, { allowFileAccess: true });
+  extensionsBySession.set(sess, { version: extension.version, dir });
+  return extension.version;
 }
 
 async function loadIntoSession(sess) {
   if (!sess || loadedSessions.has(sess)) return;
   loadedSessions.add(sess);
   const started = Date.now();
-
-  const preferred = firstExistingDir([USER_EXTENSION_DIR, BUNDLED_EXTENSION_DIR]);
-  if (!preferred) {
-    console.log('[CCU] No tracker extension found; run the installer again.');
-    startupLog('extension missing');
-    return;
-  }
-
-  try {
-    await loadExtensionFrom(preferred, sess);
-    console.log('[CCU] Extension loaded from', preferred);
-    startupLog('extension loaded', 'in ' + (Date.now() - started) + 'ms');
-    if (preferred === USER_EXTENSION_DIR) updater.writeState(ROOT, { pendingRestart: false, runningVersion: updater.readState(ROOT).version || null });
-    return;
-  } catch (err) {
-    console.error('[CCU] Failed to load tracker from', preferred, err);
-    startupLog('extension load failed', String(err && err.message || err));
-  }
-
-  // A half-installed update should never leave the user without the tracker.
-  if (preferred === USER_EXTENSION_DIR && firstExistingDir([PREVIOUS_EXTENSION_DIR])) {
+  const alternateRuntime = path.basename(__dirname) === 'runtime.old';
+  const dirs = [alternateRuntime ? PREVIOUS_EXTENSION_DIR : USER_EXTENSION_DIR, PREVIOUS_EXTENSION_DIR, BUNDLED_EXTENSION_DIR];
+  for (const dir of new Set(dirs)) {
+    if (!firstExistingDir([dir])) continue;
     try {
-      await loadExtensionFrom(PREVIOUS_EXTENSION_DIR, sess);
-      console.log('[CCU] Rolled back to the previous tracker version');
-      startupLog('extension rollback');
-      updater.writeState(ROOT, { rollbackFrom: updater.readState(ROOT).version || null, version: updater.readState(ROOT).previousVersion || null });
+      const runningVersion = await loadExtensionFrom(dir, sess);
+      startupLog('extension loaded', runningVersion + ' in ' + (Date.now() - started) + 'ms from ' + path.basename(dir));
+      updater.writeState(ROOT, { pendingRestart: false, runningVersion });
       return;
-    } catch (err) {
-      console.error('[CCU] Rollback failed:', err);
-    }
-  }
-
-  if (preferred !== BUNDLED_EXTENSION_DIR) {
-    try {
-      await loadExtensionFrom(BUNDLED_EXTENSION_DIR, sess);
-      startupLog('extension bundled fallback');
-    } catch (err) {
-      console.error('[CCU] Bundled fallback failed:', err);
+    } catch (error) {
+      console.error('[CCU] Failed to load tracker from', dir, error);
+      startupLog('extension load failed', String(error?.message || error));
     }
   }
 }
 
 async function loadExtensionEverywhere() {
-  if (!firstExistingDir([USER_EXTENSION_DIR, BUNDLED_EXTENSION_DIR])) {
+  if (!firstExistingDir([USER_EXTENSION_DIR, PREVIOUS_EXTENSION_DIR, BUNDLED_EXTENSION_DIR])) {
     console.log('[CCU] No extension folder found; skipping load');
     return;
   }
   await loadIntoSession(session.defaultSession);
   const followClaude = (wc) => {
     if (isClaudeUrl(wc.getURL())) loadIntoSession(wc.session);
-    wc.on('did-start-navigation', (ev, url) => {
-      if (isClaudeUrl(typeof url === 'string' ? url : ev && ev.url)) loadIntoSession(wc.session);
+    wc.on('did-start-navigation', (details, url, _sameDocument, isMainFrame) => {
+      if ((details.isMainFrame ?? isMainFrame) !== false && isClaudeUrl(details.url || url)) loadIntoSession(wc.session);
     });
   };
   for (const wc of webContents.getAllWebContents()) followClaude(wc);
@@ -158,7 +148,7 @@ function fireAlarm(name) {
 }
 
 function emitUpdateState(state, target = claudeWebContents) {
-  if (!target) return;
+  if (!target || target.isDestroyed?.()) return;
   target.executeJavaScript(
     "window.dispatchEvent(new CustomEvent('ccuUpdateState', { detail: " + JSON.stringify(state) + " }));"
   ).catch(() => {});
@@ -173,45 +163,46 @@ function showNotification(title, body) {
 }
 
 // ── In-app update ───────────────────────────────────────────
-let updateInProgress = false;
+let activeUpdate;
 
-async function handleUpdateRequest(payload, target = claudeWebContents) {
-  if (updateInProgress) return;
-  updateInProgress = true;
+async function handleUpdateRequest(payload, target) {
+  if (activeUpdate) {
+    activeUpdate.targets.add(target);
+    emitUpdateState(activeUpdate.state, target);
+    return;
+  }
+  const targets = new Set([target]);
+  const emit = (state) => {
+    activeUpdate = { targets, state };
+    for (const contents of targets) emitUpdateState(state, contents);
+  };
+  emit({ phase: 'checking', percent: 0 });
 
-  const url = payload && payload.url;
-  const sha256 = payload && payload.sha256;
-  const version = (payload && payload.version) || null;
-  const emit = (state) => emitUpdateState(state, target);
-
+  let staging;
   try {
-    if (!url || !/^https:\/\//i.test(url)) throw new Error('Update URL is missing or not HTTPS');
-    if (!sha256) throw new Error('Update checksum is missing');
+    const loaded = extensionsBySession.get(target.session);
+    if (!loaded?.version) throw new Error('Could not identify the loaded tracker version');
+    const { fetchUpdateStatus } = await import(pathToFileURL(path.join(loaded.dir, 'bg-components', 'update-check.js')).href);
+    const status = await fetchUpdateStatus((url, options) => fetch(url, { ...options, signal: AbortSignal.timeout(15000) }), loaded.version, 'other');
+    if (!status.updateAvailable) throw new Error('The tracker is already up to date');
+    if (status.latestVersion !== payload?.version) throw new Error('The release changed. Check for updates again.');
+    if (!status.extension) throw new Error(status.packageError);
+    const { url, sha256, size } = status.extension;
 
     fs.mkdirSync(updater.tempDir(ROOT), { recursive: true });
-    const zipPath = path.join(updater.tempDir(ROOT), 'update-' + Date.now() + '.zip');
-
-    emit({ phase: 'downloading', percent: 0, version });
+    staging = fs.mkdtempSync(path.join(updater.tempDir(ROOT), 'download-'));
+    const zipPath = path.join(staging, 'update.zip');
+    emit({ phase: 'downloading', percent: 0 });
     await updater.downloadToFile(url, zipPath, {
-      onProgress: ({ percent }) => emit({ phase: 'downloading', percent: percent ?? 0, version })
+      expectedSize: size,
+      allowedHosts: ['github.com', 'release-assets.githubusercontent.com', 'objects.githubusercontent.com'],
+      onProgress: ({ percent }) => emit({ phase: 'downloading', percent: percent ?? 0 })
     });
 
-    emit({ phase: 'verifying', percent: 80, version });
-    const actual = await updater.sha256File(zipPath);
-    if (updater.normalizeSha(actual) !== updater.normalizeSha(sha256)) {
-      throw new Error('Downloaded update failed its checksum check');
-    }
-
-    emit({ phase: 'installing', percent: 90, version });
-    await updater.applyUpdateZip({ zipPath, sha256, root: ROOT, onProgress: (state) => emit({ ...state, version }) });
-    try { fs.unlinkSync(zipPath); } catch {}
-
-    updater.clearServiceWorkerCache();
-    updater.writeState(ROOT, { pendingRestart: true, version });
-
-    // Give the card a moment to show the countdown before the window disappears.
+    await updater.applyUpdateZip({ zipPath, sha256, root: ROOT, version: status.latestVersion, onProgress: emit });
+    try { fs.rmSync(staging, { recursive: true, force: true }); staging = null; } catch {}
     for (let secondsLeft = 3; secondsLeft > 0; secondsLeft--) {
-      emit({ phase: 'restarting', percent: 100, secondsLeft, version });
+      emit({ phase: 'restarting', percent: 100, secondsLeft });
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
 
@@ -219,8 +210,12 @@ async function handleUpdateRequest(payload, target = claudeWebContents) {
     app.exit(0);
   } catch (error) {
     console.error('[CCU] Update failed:', error);
-    updateInProgress = false;
-    emit({ phase: 'error', message: (error && error.message) || String(error), version });
+    emit({ phase: 'error', message: error?.message || String(error) });
+  } finally {
+    if (staging) {
+      try { fs.rmSync(staging, { recursive: true, force: true }); } catch {}
+    }
+    activeUpdate = null;
   }
 }
 
@@ -277,15 +272,7 @@ function setupPolyfills() {
       return;
     }
 
-    if (msg.startsWith('CUT_UPDATE:')) {
-      try {
-        const payload = JSON.parse(msg.substring(11));
-        handleUpdateRequest(payload, (event && event.sender) || claudeWebContents);
-      } catch (e) {
-        console.error('[CCU] Update request error:', e);
-      }
-      return;
-    }
+
   });
 
   mainWindow.on('focus', () => {
@@ -308,13 +295,18 @@ app.on('browser-window-created', (event, win) => {
   }
 });
 
-app.on('web-contents-created', (event, contents) => {
-  // Relay only the tracker's own lines. Matching anything containing "Error" echoed most of
-  // claude.ai's console into the main process during startup.
-  contents.on('console-message', (ev, level, message) => {
-    const text = typeof message === 'string' ? message : (typeof level === 'string' ? level : ((ev && ev.message) || ''));
+app.on('web-contents-created', (_event, contents) => {
+  contents.on('console-message', (details, level, message) => {
+    const text = details.message || (typeof message === 'string' ? message : '');
     if (text.startsWith('[CCU]') || text.startsWith('[UsageTracker]')) {
       console.log('[Renderer]', text);
+    }
+    if (!text.startsWith('CUT_UPDATE:') || !isClaudeUrl(contents.getURL())) return;
+    if (details.frame && details.frame !== contents.mainFrame) return;
+    try {
+      handleUpdateRequest(JSON.parse(text.slice('CUT_UPDATE:'.length)), contents);
+    } catch (error) {
+      emitUpdateState({ phase: 'error', message: error.message }, contents);
     }
   });
 
@@ -327,7 +319,9 @@ app.on('web-contents-created', (event, contents) => {
       watchClaudeLoad(contents, url);
     }
   };
-  contents.on('did-start-navigation', (_ev, url) => check(url || ''));
+  contents.on('did-start-navigation', (details, url, _sameDocument, isMainFrame) => {
+    if ((details.isMainFrame ?? isMainFrame) !== false) check(details.url || url);
+  });
   contents.once('dom-ready', () => check(contents.getURL()));
 });
 

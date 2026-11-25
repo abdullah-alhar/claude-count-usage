@@ -16,6 +16,8 @@ const os = require('os');
 const crypto = require('crypto');
 const zlib = require('zlib');
 const https = require('https');
+const { pipeline } = require('stream/promises');
+const { Script } = require('vm');
 
 const APP_DIR_NAME = 'ClaudeCountUsage';
 const STATE_FILE = 'state.json';
@@ -53,6 +55,33 @@ function writeState(root, patch) {
     fs.renameSync(tmp, statePath(root));
   } catch {}
   return next;
+}
+
+function readExtensionVersion(dir) {
+  return JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8')).version;
+}
+
+function extensionIdForPath(dir) {
+  const windows = process.platform === 'win32';
+  const normalized = windows ? dir.replace(/^[a-z]:/, drive => drive.toUpperCase()) : dir;
+  return crypto.createHash('sha256').update(normalized, windows ? 'utf16le' : 'utf8').digest('hex')
+    .slice(0, 32).replace(/./g, hex => String.fromCharCode(97 + parseInt(hex, 16)));
+}
+
+function migrateExtensionSettings(storage, sourceDir, destDir) {
+  for (const name of ['Local Extension Settings', 'Sync Extension Settings']) {
+    const parent = path.join(storage, name);
+    const source = path.join(parent, extensionIdForPath(sourceDir));
+    const dest = path.join(parent, extensionIdForPath(destDir));
+    if (fs.existsSync(dest) || !fs.existsSync(source)) continue;
+    const temporary = fs.mkdtempSync(path.join(parent, 'ccu-settings-'));
+    try {
+      fs.cpSync(source, temporary, { recursive: true, filter: file => path.basename(file) !== 'LOCK' });
+      fs.renameSync(temporary, dest);
+    } finally {
+      fs.rmSync(temporary, { force: true, recursive: true });
+    }
+  }
 }
 
 // ─── Hashing ────────────────────────────────────────────────
@@ -177,82 +206,69 @@ function extractZipFile(zipPath, destDir) {
 
 // ─── Download ───────────────────────────────────────────────
 
-function downloadToFile(url, destPath, options = {}) {
+async function downloadToFile(url, destPath, options = {}) {
   const {
     onProgress = () => {},
     maxRedirects = 8,
     timeoutMs = 30000,
+    allowedHosts,
+    expectedSize,
     headers = {}
   } = options;
 
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const fail = (err) => {
-      if (settled) return;
-      settled = true;
-      try { fs.unlinkSync(destPath); } catch {}
-      reject(err);
-    };
+  async function request(target, redirectsLeft) {
+    const parsed = new URL(target);
+    if (parsed.protocol !== 'https:' || (allowedHosts && !allowedHosts.includes(parsed.hostname))) {
+      throw new Error('Unexpected update download host: ' + parsed.host);
+    }
 
-    const request = (target, redirectsLeft) => {
-      let parsed;
-      try { parsed = new URL(target); } catch (e) { return fail(new Error(`Invalid update URL: ${target}`)); }
-      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-        return fail(new Error(`Refusing non-HTTP update URL: ${target}`));
-      }
-      if (parsed.protocol === 'http:') return fail(new Error(`Refusing plain HTTP update URL: ${target}`));
-
-      const client = https;
-      const req = client.get(parsed, {
+    const res = await new Promise((resolve, reject) => {
+      const req = https.get(parsed, {
         headers: {
           'User-Agent': 'ClaudeCountUsage-Updater',
           'Accept': 'application/octet-stream',
           ...headers
         }
-      }, (res) => {
-        const status = res.statusCode || 0;
-        if (status >= 300 && status < 400 && res.headers.location) {
-          res.resume();
-          if (redirectsLeft <= 0) return fail(new Error('Too many redirects while downloading the update'));
-          const next = new URL(res.headers.location, parsed).toString();
-          return request(next, redirectsLeft - 1);
-        }
-        if (status !== 200) {
-          res.resume();
-          return fail(new Error(`Update download failed with HTTP ${status}`));
-        }
-
-        const total = parseInt(res.headers['content-length'] || '0', 10) || 0;
-        let received = 0;
-        let lastReport = 0;
-        fs.mkdirSync(path.dirname(destPath), { recursive: true });
-        const out = fs.createWriteStream(destPath);
-
-        res.on('data', (chunk) => {
-          received += chunk.length;
-          const now = Date.now();
-          if (now - lastReport > 120) {
-            lastReport = now;
-            onProgress({ received, total, percent: total ? Math.min(100, Math.round((received / total) * 100)) : null });
-          }
-        });
-        res.on('error', fail);
-        out.on('error', fail);
-        out.on('finish', () => {
-          if (settled) return;
-          settled = true;
-          onProgress({ received, total, percent: 100 });
-          resolve({ received, total });
-        });
-        res.pipe(out);
-      });
-
+      }, resolve);
       req.setTimeout(timeoutMs, () => req.destroy(new Error('Update download timed out')));
-      req.on('error', fail);
-    };
+      req.on('error', reject);
+    });
+    const status = res.statusCode || 0;
+    if (status >= 300 && status < 400 && res.headers.location) {
+      res.resume();
+      if (redirectsLeft <= 0) throw new Error('Too many redirects while downloading the update');
+      return request(new URL(res.headers.location, parsed), redirectsLeft - 1);
+    }
+    if (status !== 200) {
+      res.resume();
+      throw new Error(`Update download failed with HTTP ${status}`);
+    }
+    return res;
+  }
 
-    request(url, maxRedirects);
-  });
+  fs.mkdirSync(path.dirname(destPath), { recursive: true });
+  try {
+    const res = await request(url, maxRedirects);
+    const total = expectedSize || Number(res.headers['content-length']) || 0;
+    let received = 0;
+    let lastReport = 0;
+    res.on('data', (chunk) => {
+      received += chunk.length;
+      if (total && received > total) {
+        res.destroy(new Error('Update download exceeded the expected size'));
+      } else if (Date.now() - lastReport > 120) {
+        lastReport = Date.now();
+        onProgress({ received, total, percent: total ? Math.floor(received * 100 / total) : null });
+      }
+    });
+    await pipeline(res, fs.createWriteStream(destPath));
+    if (total && received !== total) throw new Error('Update download did not match the expected size');
+    onProgress({ received, total, percent: 100 });
+    return { received, total };
+  } catch (error) {
+    try { fs.unlinkSync(destPath); } catch {}
+    throw error;
+  }
 }
 
 // ─── Applying a package ─────────────────────────────────────
@@ -262,17 +278,21 @@ function downloadToFile(url, destPath, options = {}) {
 //   runtime/wrapper-runtime.js
 //   runtime/ccu-update.js
 //   version.json             { "version": "1.7.0" }
-function validatePackageDir(packageDir) {
+function validatePackageDir(packageDir, expectedVersion) {
   const ext = path.join(packageDir, 'extension');
   const runtime = path.join(packageDir, 'runtime');
-  if (!fs.existsSync(path.join(ext, 'manifest.json'))) {
-    throw new Error('Update package is missing extension/manifest.json');
+  const manifest = JSON.parse(fs.readFileSync(path.join(ext, 'manifest.json'), 'utf8'));
+  const { version } = JSON.parse(fs.readFileSync(path.join(packageDir, 'version.json'), 'utf8'));
+  if (!/^\d+\.\d+\.\d+$/.test(version) || manifest.version !== version || (expectedVersion && expectedVersion !== version)) {
+    throw new Error('Update package version does not match the release');
   }
-  if (!fs.existsSync(path.join(runtime, 'wrapper-runtime.js'))) {
-    throw new Error('Update package is missing runtime/wrapper-runtime.js');
+  for (const name of ['wrapper-runtime.js', 'ccu-update.js']) {
+    const filename = path.join(runtime, name);
+    new Script(fs.readFileSync(filename, 'utf8'), { filename });
   }
-  let version = null;
-  try { version = JSON.parse(fs.readFileSync(path.join(packageDir, 'version.json'), 'utf8')).version || null; } catch {}
+  for (const name of ['background.js', 'bg-components/update-check.js', 'content-components/settings_card.js']) {
+    if (!fs.statSync(path.join(ext, name)).isFile()) throw new Error('Update package is missing ' + name);
+  }
   return { version, extensionDir: ext, runtimeDir: runtime };
 }
 
@@ -330,12 +350,6 @@ function replaceDirsAtomic(root, names) {
   }
 }
 
-function cleanupOldDirs(root) {
-  for (const name of ['extension.old', 'runtime.old']) {
-    try { fs.rmSync(path.join(root, name), { recursive: true, force: true }); } catch {}
-  }
-}
-
 function copyTree(src, dest) {
   const stat = fs.statSync(src);
   if (stat.isDirectory()) {
@@ -353,8 +367,8 @@ function copyTree(src, dest) {
 // stays in extension.old / runtime.old until the next successful update so the runtime can fall
 // back if the new files fail to load.
 function applyUpdatePackage({ packageDir, root = ccuRoot(), version = null, onProgress = () => {} }) {
-  const pkg = validatePackageDir(packageDir);
-  const resolvedVersion = version || pkg.version || readState(root).version || null;
+  const pkg = validatePackageDir(packageDir, version);
+  const resolvedVersion = pkg.version;
 
   fs.mkdirSync(root, { recursive: true });
   onProgress({ phase: 'installing', percent: 90 });
@@ -438,6 +452,9 @@ module.exports = {
   tempDir,
   readState,
   writeState,
+  readExtensionVersion,
+  extensionIdForPath,
+  migrateExtensionSettings,
   sha256File,
   normalizeSha,
   readZipEntries,

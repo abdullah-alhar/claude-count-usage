@@ -376,6 +376,7 @@ console.log('\n=== 4. SettingsCard.refreshUsage() execution test ===');
 		const el = {
 			tagName: tag.toUpperCase(),
 			className: '',
+			classList: { remove() {} },
 			style: { display: '', color: '', cursor: '', opacity: '' },
 			children: [],
 			textContent: '',
@@ -429,6 +430,7 @@ console.log('\n=== 4. SettingsCard.refreshUsage() execution test ===');
 			addEventListener() {},
 		},
 		window: {},
+		isElectron: true,
 		// Stub globals expected by settings_card.js
 		sendBackgroundMessage: async (msg) => {
 			sendBgCalls.push(msg);
@@ -553,7 +555,7 @@ console.log('\n=== 4. SettingsCard.refreshUsage() execution test ===');
 	assert(infoText.includes('1.3') && infoText.includes('1.4') && infoText.includes('→'),
 		'update available: shows current → latest version');
 	const links = allNodes(updateArea).filter(n => n.tagName === 'A');
-	assert(links.some(a => a.href === macZip && a.target === '_blank' && a.rel.includes('noopener')),
+	assert(links.some(a => a.href === macZip && a.target === '_blank' && a.rel.includes('noopener') && a.textContent === 'settings.update_manual_installer'),
 		'links the platform download in a new window with noopener');
 	assert(links.some(a => a.href === releaseUrl), 'links the GitHub release page');
 	assert(updateStatus.style.display === 'none', 'successful check leaves the result to the info block');
@@ -595,6 +597,16 @@ console.log('\n=== 4. SettingsCard.refreshUsage() execution test ===');
 		releaseUrl: 'https://evil.example/release', downloadUrl: 'javascript:alert(1)', checkedAt: Date.now(), error: null
 	});
 	assert(!allNodes(updateArea).some(n => n.tagName === 'A'), 'non-github.com release URLs are not rendered as links');
+
+	// Missing metadata still renders a button, and starting an update has no navigation path.
+	assert(card.updateAction?.button.tagName === 'BUTTON', 'desktop shows Update now even without a package');
+	sendBgCalls.length = 0;
+	sendBgResolveWith = { ok: false, error: 'no-package', message: 'Release package unavailable' };
+	const attempt = card.startUpdate();
+	await card.startUpdate();
+	await attempt;
+	assert(sendBgCalls.filter(c => c.type === 'applyUpdate').length === 1, 'duplicate Update now clicks are blocked');
+	assert(card.updateAction.text.textContent.includes('Release package unavailable'), 'update failure shows its reason in the card');
 
 	// Automatic toggle relays to the background
 	sendBgCalls.length = 0;

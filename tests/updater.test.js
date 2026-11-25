@@ -122,57 +122,50 @@ async function testManifestParsing() {
 	const uc = await import(pathToFileURL(path.join(rootDir, 'bg-components', 'update-check.js')).href);
 
 	const sha = 'a'.repeat(64);
+	const base = 'https://github.com/abdullah-alhar/claude-count-usage/releases';
+	const asset = (name, digest) => ({ name, browser_download_url: base + '/download/v1.7.2/' + name, digest });
+	const zip = asset('ccu-extension.zip', 'sha256:' + sha);
 	const release = {
-		tag_name: 'v1.7.0',
-		html_url: 'https://github.com/abdullah-alhar/claude-count-usage/releases/tag/v1.7.0',
-		assets: [{ name: 'latest.json', browser_download_url: 'https://github.com/x/latest.json' }]
+		tag_name: 'v1.7.2',
+		html_url: base + '/tag/v1.7.2',
+		assets: [asset('latest.json'), zip, asset('Mac.installer.zip'), asset('windows.installer.zip')]
 	};
 	const manifest = {
-		version: '1.7.0',
-		notes: 'Faster usage refresh',
-		extension: { url: 'https://github.com/x/ccu-extension.zip', sha256: sha, size: 1234 },
-		installers: {
-			mac: { url: 'https://github.com/x/ClaudeCountUsage.dmg', sha256: sha },
-			windows: { url: 'https://github.com/x/ClaudeCountUsage-Setup.exe', sha256: sha }
-		}
+		version: '1.7.2',
+		extension: { url: zip.browser_download_url, sha256: sha, size: 1234 }
 	};
 
-	const status = uc.buildUpdateStatus(release, '1.6.0', 'mac', 1000, manifest);
-	check(status.latestVersion === '1.7.0', 'manifest version wins over the tag');
-	check(status.updateAvailable === true, 'newer manifest version means an update is available');
-	check(status.extension && status.extension.sha256 === sha, 'extension package carries its SHA-256');
-	check(status.downloadUrl === manifest.installers.mac.url, 'Mac gets the DMG installer link');
-	check(status.notes === 'Faster usage refresh', 'release notes are carried through');
+	const fetchWithoutManifest = async url => {
+		assert.strictEqual(url, uc.RELEASES_API_URL);
+		return { ok: true, json: async () => release };
+	};
+	for (const [platform, installer] of [['mac', 'Mac.installer.zip'], ['windows', 'windows.installer.zip']]) {
+		const status = await uc.fetchUpdateStatus(fetchWithoutManifest, '1.7.0', platform);
+		check(status.updateAvailable && status.extension?.sha256 === sha, platform + ' finds the update from the API alone');
+		check(status.downloadUrl.endsWith('/' + installer), platform + ' gets its own manual installer link');
+	}
 
-	const windows = uc.buildUpdateStatus(release, '1.6.0', 'windows', 1000, manifest);
-	check(windows.downloadUrl === manifest.installers.windows.url, 'Windows gets the Setup.exe link');
-
-	const unsafe = uc.buildUpdateStatus(release, '1.6.0', 'mac', 1000, {
-		...manifest,
-		extension: { url: 'http://insecure.example/update.zip', sha256: sha }
-	});
-	check(unsafe.extension === null, 'plain-HTTP package URLs are rejected');
-
-	const badHash = uc.buildUpdateStatus(release, '1.6.0', 'mac', 1000, {
-		...manifest,
-		extension: { url: 'https://github.com/x/update.zip', sha256: 'not-a-hash' }
-	});
-	check(badHash.extension === null, 'a missing/short SHA-256 disables in-place updating');
-
-	const noManifest = uc.buildUpdateStatus(release, '1.6.0', 'mac', 1000, null);
-	check(noManifest.extension === null && noManifest.updateAvailable === true,
-		'older releases still report the update, just without the auto-install package');
+	const withoutDigest = { ...release, assets: release.assets.map(item => ({ ...item, digest: undefined })) };
+	check(uc.buildUpdateStatus(withoutDigest, '1.7.0', 'mac', 0, manifest).extension?.sha256 === sha,
+		'accepts the matching release manifest if the API digest is absent');
+	for (const invalid of [
+		{ ...manifest, version: '1.7.1' },
+		{ ...manifest, extension: { ...manifest.extension, url: 'https://github.com/another-repo/update.zip' } },
+		{ ...manifest, extension: { ...manifest.extension, sha256: 'not-a-hash' } },
+		null
+	]) {
+		const status = uc.buildUpdateStatus(withoutDigest, '1.7.0', 'mac', 0, invalid);
+		check(status.updateAvailable && !status.extension && !!status.packageError, 'rejects missing or invalid package metadata');
+	}
+	check(uc.buildUpdateStatus(release, '1.7.2', 'mac', 0).updateAvailable === false,
+		'loaded release version is already up to date');
 
 	check(uc.findManifestAsset(release)?.name === 'latest.json', 'finds the latest.json release asset');
+	const fetched = await uc.fetchReleaseManifest(async () => ({ ok: true, json: async () => manifest }), release);
+	check(fetched?.version === '1.7.2', 'fetches and parses the manifest for older release metadata');
+	const malformed = await uc.fetchReleaseManifest(async () => ({ ok: false, status: 500 }), release);
+	check(malformed === null, 'a failed manifest fetch returns no manifest');
 
-	const fetched = await uc.fetchReleaseManifest(async () => ({
-		ok: true,
-		json: async () => manifest
-	}), release);
-	check(fetched?.version === '1.7.0', 'fetchReleaseManifest downloads and parses the asset');
-
-	const broken = await uc.fetchReleaseManifest(async () => ({ ok: false, status: 500, json: async () => ({}) }), release);
-	check(broken === null, 'a failing manifest fetch never breaks the version check');
 }
 
 // ─── 2. Zip extraction ─────────────────────────────────────
@@ -222,6 +215,11 @@ function testApplyPackage() {
 		fs.writeFileSync(path.join(pkg, 'extension', 'manifest.json'), '{"version":"1.7.0"}');
 		fs.writeFileSync(path.join(pkg, 'extension', 'new.js'), 'new');
 		fs.writeFileSync(path.join(pkg, 'runtime', 'wrapper-runtime.js'), 'runtime');
+		fs.writeFileSync(path.join(pkg, 'runtime', 'ccu-update.js'), 'module.exports = {};');
+		for (const file of ['background.js', 'bg-components/update-check.js', 'content-components/settings_card.js']) {
+			fs.mkdirSync(path.dirname(path.join(pkg, 'extension', file)), { recursive: true });
+			fs.writeFileSync(path.join(pkg, 'extension', file), '');
+		}
 		fs.writeFileSync(path.join(pkg, 'version.json'), '{"version":"1.7.0"}');
 
 		const result = updater.applyUpdatePackage({ packageDir: pkg, root });
@@ -258,6 +256,10 @@ async function testChecksumAsync() {
 		fs.writeFileSync(zipPath, makeZip([
 			{ name: 'extension/manifest.json', data: '{"version":"1.7.0"}' },
 			{ name: 'runtime/wrapper-runtime.js', data: 'runtime' },
+			{ name: 'runtime/ccu-update.js', data: 'module.exports = {};' },
+			{ name: 'extension/background.js', data: '' },
+			{ name: 'extension/bg-components/update-check.js', data: '' },
+			{ name: 'extension/content-components/settings_card.js', data: '' },
 			{ name: 'version.json', data: '{"version":"1.7.0"}' }
 		]));
 
@@ -270,7 +272,13 @@ async function testChecksumAsync() {
 		check(message && /Checksum mismatch/.test(message), 'a mismatched checksum aborts the install');
 		check(!fs.existsSync(path.join(root, 'extension')), 'nothing is installed after a bad checksum');
 
+		const previousDir = updater.extensionDir(root);
+		fs.mkdirSync(previousDir, { recursive: true });
+		fs.writeFileSync(path.join(previousDir, 'manifest.json'), '{"version":"1.6.0"}');
+
 		const sha = await updater.sha256File(zipPath);
+		await assert.rejects(updater.applyUpdateZip({ zipPath, sha256: sha, version: '1.7.2', root }), /version does not match/);
+		check(updater.readExtensionVersion(previousDir) === '1.6.0', 'a version mismatch keeps the previous version usable');
 		const result = await updater.applyUpdateZip({ zipPath, sha256: sha, root });
 		check(result.version === '1.7.0', 'a matching checksum installs the package');
 		check(fs.existsSync(path.join(root, 'extension', 'manifest.json')), 'package contents land in the user folder');
