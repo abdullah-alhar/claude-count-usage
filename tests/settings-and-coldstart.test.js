@@ -1225,7 +1225,7 @@ console.log('\n=== 16. handleSsePartialUsage(): free plan weekly goes live ===')
 console.log('\n=== 17. signMac() restores entitlements (Cowork) ===');
 {
 	const inj = fs.readFileSync(path.join(rootDir, 'desktop-injector.js'), 'utf8');
-	const grab = (name) => inj.match(new RegExp('const ' + name + ' = [\\s\\S]*?;\\n'))?.[0];
+	const grab = (name) => inj.match(new RegExp('const ' + name + ' = [\\s\\S]*?;\\r?\\n'))?.[0];
 	// eslint-disable-next-line no-new-func
 	const env = new Function(grab('RESTRICTED_ENTITLEMENT') + grab('DEVICE_ENTITLEMENTS') + grab('DEFAULT_ENTITLEMENTS') +
 		inj.match(/function withoutRestricted[\s\S]*?\n\}/)[0] + '\nreturn { RESTRICTED_ENTITLEMENT, DEFAULT_ENTITLEMENTS, withoutRestricted };')();

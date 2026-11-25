@@ -1,0 +1,5 @@
+# Keep source files byte-identical across macOS and Windows. Several tests inspect source text,
+# while Windows batch files retain their native line endings.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
