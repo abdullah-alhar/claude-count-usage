@@ -588,6 +588,7 @@ function ccuRoot() {
 
 const candidates = [
   path.join(ccuRoot(), 'runtime', 'wrapper-runtime.js'),
+  path.join(ccuRoot(), 'runtime.old', 'wrapper-runtime.js'),
   path.join(process.resourcesPath || '', 'injected-extension', 'wrapper-runtime.js')
 ];
 let loaded = false;
@@ -610,7 +611,7 @@ require(${JSON.stringify(relativeMainPath)});
 function closeRunningClaude() {
   try {
     if (os.platform() === 'win32') {
-      execFileSync('taskkill', ['/f', '/im', 'Claude.exe'], { stdio: 'ignore' });
+      execFileSync('taskkill', ['/f', '/im', 'Claude.exe'], { stdio: 'ignore', windowsHide: true });
     } else if (os.platform() === 'darwin') {
       execFileSync('pkill', ['-x', 'Claude'], { stdio: 'ignore' });
     }
@@ -670,20 +671,12 @@ function safeReplaceAsar(tempAsarPath, asarPath) {
 
 // ─── Surgical ASAR Patcher ──────────────────────────────────
 
-async function patchAsar(asarPath, extensionDir) {
+async function patchAsar(asarPath, extensionDir, beforeRewrite = () => {}) {
   if (!fs.existsSync(asarPath)) throw new Error(`No app.asar at ${asarPath}`);
   if (!fs.existsSync(extensionDir)) throw new Error(`Extension dir not found at ${extensionDir}`);
 
   const resourcesDir = path.dirname(asarPath);
 
-  // Clean up any stale temporary asar files from previous failed runs
-  try {
-    for (const file of fs.readdirSync(resourcesDir)) {
-      if (file.startsWith('app.asar.tmp-') || file.startsWith('app.asar.old-')) {
-        try { fs.unlinkSync(path.join(resourcesDir, file)); } catch {}
-      }
-    }
-  } catch {}
   // 1. Load and validate package.json, with automatic recovery from healthy backups if corrupted
   let asarInfo = tryLoadAsar(asarPath);
   if (!asarInfo) {
@@ -697,6 +690,7 @@ async function patchAsar(asarPath, extensionDir) {
       if (fs.existsSync(backupFile)) {
         const backupInfo = tryLoadAsar(backupFile);
         if (backupInfo) {
+          beforeRewrite();
           console.log(`Notice: Existing ${path.basename(asarPath)} was corrupted. Automatically restored from healthy backup (${path.basename(backupFile)})...`);
           fs.copyFileSync(backupFile, asarPath);
           asarInfo = backupInfo;
@@ -753,11 +747,14 @@ async function patchAsar(asarPath, extensionDir) {
 
   // Normal updates only replace files in the user folder. The asar is rewritten once (to install
   // this bootstrap) and then never again, which avoids re-signing and touching a running bundle.
-  if (currentMainBuf && pkg.main === wrapperRelPath && currentMainBuf.toString('utf8') === wrapperSource) {
-    console.log('app.asar bootstrap is already up to date; skipping asar rewrite.');
-    installExtensionFolder(path.join(resourcesDir, 'injected-extension'), extensionDir);
+  const earlierBootstrap = wrapperSource.replace("  path.join(ccuRoot(), 'runtime.old', 'wrapper-runtime.js'),\n", '');
+  const currentSource = currentMainBuf?.toString('utf8');
+  if (pkg.main === wrapperRelPath && [wrapperSource, earlierBootstrap].includes(currentSource)) {
+    console.log('app.asar already loads the user runtime; keeping the signed bundle intact.');
     return { asarPath, backupAsar: null, alreadyPatched: true };
   }
+
+  beforeRewrite();
 
   // Update package.json
   pkg._originalMain = originalMain;
@@ -1063,28 +1060,24 @@ function installUserRuntime(extensionDir) {
     }
   }
 
-  fs.mkdirSync(root, { recursive: true });
-
-  // Replace the previous version, keeping a rollback copy until the next successful update.
-  installExtensionFolder(destExtension, extensionDir);
-
-  fs.rmSync(destRuntime, { recursive: true, force: true });
-  fs.mkdirSync(destRuntime, { recursive: true });
-  for (const file of RUNTIME_FILES) {
-    fs.copyFileSync(path.join(extensionDir, file), path.join(destRuntime, file));
+  fs.mkdirSync(updater.tempDir(root), { recursive: true });
+  const staging = fs.mkdtempSync(path.join(updater.tempDir(root), 'installer-'));
+  try {
+    const ext = updater.extensionDir(staging);
+    const runtime = updater.runtimeDir(staging);
+    installExtensionFolder(ext, extensionDir);
+    fs.mkdirSync(runtime);
+    for (const file of RUNTIME_FILES) {
+      fs.copyFileSync(path.join(extensionDir, file), path.join(runtime, file));
+    }
+    const version = readExtensionVersion(ext);
+    fs.writeFileSync(path.join(staging, 'version.json'), JSON.stringify({ version }));
+    updater.applyUpdatePackage({ packageDir: staging, root });
+    console.log('Installed tracker files to:', root);
+    return { root, extensionDir: destExtension, runtimeDir: destRuntime, version };
+  } finally {
+    fs.rmSync(staging, { recursive: true, force: true });
   }
-
-  const version = readExtensionVersion(extensionDir);
-  const previous = updater.readState(root);
-  updater.writeState(root, {
-    version: version || previous.version || null,
-    previousVersion: previous.version && previous.version !== version ? previous.version : previous.previousVersion || null,
-    installedAt: new Date().toISOString(),
-    pendingRestart: false
-  });
-
-  console.log('Installed tracker files to:', root);
-  return { root, extensionDir: destExtension, runtimeDir: destRuntime, version };
 }
 
 function unpatchAsar(asarPath) {
@@ -1501,7 +1494,7 @@ function signMac(appPath) {
   verifyMacSignature(appPath, path.join(appPath, 'Contents', 'Resources', 'app.asar'));
 
   try {
-    const dr = execFileSync('codesign', ['-d', '-r-', appPath], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+    const dr = spawnSync('codesign', ['-d', '-r-', appPath], { encoding: 'utf8' }).stderr || '';
     if (/designated => identifier /.test(dr)) {
       console.log('Verified: stable signing requirement set (keychain access survives future updates).');
     } else {
@@ -1571,13 +1564,6 @@ function cleanupMacLeftovers(appPath) {
     }
   }
 
-  // Also clean old Application Support folder if present
-  const oldAppSupport = path.join(home, 'Library', 'Application Support', 'ClaudeCountUsage');
-  try {
-    if (fs.existsSync(oldAppSupport)) {
-      fs.rmSync(oldAppSupport, { recursive: true, force: true });
-    }
-  } catch {}
 }
 
 // ─── Windows Start Menu & Desktop Shortcut Creation ────────
@@ -1640,7 +1626,7 @@ $s2.IconLocation = '${exePath.replace(/'/g, "''")},0'
 $s2.Description = 'Claude Desktop'
 $s2.Save()
 `;
-    execFileSync('powershell.exe', ['-NoProfile', '-Command', psScript]);
+    execFileSync('powershell.exe', ['-NoProfile', '-Command', psScript], { windowsHide: true });
     console.log('Created Start Menu shortcut (Windows Search will now find Claude).');
   } catch (err) {
     console.warn('Could not create shortcut:', err.message);
@@ -1661,7 +1647,6 @@ function clearServiceWorkerCache() {
 async function cmdInstall(extensionDir) {
   closeRunningClaude();
   let install = locateClaude();
-  if (install?.platform === 'darwin') checkMacBundleOwner(install.appPath);
 
   if (install && install.platform === 'darwin' && !isBundleHealthy(install.appPath)) {
     console.log('Detected corrupted or broken app bundle (broken framework symlinks).');
@@ -1712,15 +1697,16 @@ async function cmdInstall(extensionDir) {
     console.log(`Found Claude Desktop at: ${install.appPath}`);
   }
 
-  if (install.platform === 'darwin') checkMacBundleAccess(install);
   console.log(`Patching ${install.asarPath} ...`);
-  const patchResult = await patchAsar(install.asarPath, extensionDir);
+  const patchResult = await patchAsar(install.asarPath, extensionDir, () => {
+    if (install.platform === 'darwin') checkMacBundleAccess(install);
+  });
   installUserRuntime(extensionDir);
   clearServiceWorkerCache();
 
   if (install.platform === 'darwin') {
-    cleanupMacLeftovers(install.appPath);
     if (!patchResult.alreadyPatched) {
+      cleanupMacLeftovers(install.appPath);
       updateInfoPlistHash(install.appPath, install.asarPath);
       signMac(install.appPath);
     } else {
@@ -1746,13 +1732,15 @@ async function cmdPatch(extensionDir) {
   if (!install) {
     throw new Error('Claude Desktop not found. Use "install" to automatically download and install it.');
   }
-  if (install.platform === 'darwin') checkMacBundleAccess(install);
-  const patchResult = await patchAsar(install.asarPath, extensionDir);
+  if (install.protected) throw new Error('Open the standard installer to set up an editable Claude Desktop installation.');
+  const patchResult = await patchAsar(install.asarPath, extensionDir, () => {
+    if (install.platform === 'darwin') checkMacBundleAccess(install);
+  });
   installUserRuntime(extensionDir);
   clearServiceWorkerCache();
   if (install.platform === 'darwin') {
-    cleanupMacLeftovers(install.appPath);
     if (!patchResult.alreadyPatched) {
+      cleanupMacLeftovers(install.appPath);
       updateInfoPlistHash(install.appPath, install.asarPath);
       signMac(install.appPath);
     } else {
@@ -1767,6 +1755,25 @@ async function cmdPatch(extensionDir) {
     throw new Error(`Verification failed: ${install.asarPath} does not contain the injection marker after patching.`);
   }
   if (install.platform !== 'darwin') console.log('Patched successfully.');
+}
+
+function launchClaude() {
+  const install = locateClaude();
+  if (!install) throw new Error('Claude Desktop could not be located for restart');
+  if (install.platform === 'darwin') {
+    execFileSync('open', ['-a', install.appPath]);
+    return;
+  }
+  const executable = path.join(path.dirname(path.dirname(install.asarPath)), 'Claude.exe');
+  if (!fs.existsSync(executable)) throw new Error('Claude.exe was not found at ' + executable);
+  return new Promise((resolve, reject) => {
+    const child = spawn(executable, [], { cwd: path.dirname(executable), detached: true, stdio: 'ignore' });
+    child.once('error', reject);
+    child.once('spawn', () => {
+      child.unref();
+      resolve();
+    });
+  });
 }
 
 function cmdUnpatch() {
@@ -1953,6 +1960,7 @@ if (require.main === module) {
         break;
       case 'patch':
         await cmdPatch(extDir);
+        if (rest.includes('--launch')) await launchClaude();
         if (macWorker) return;
         process.exit(0);
         break;

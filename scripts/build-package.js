@@ -44,6 +44,9 @@ function copyEntry(name, destDir) {
 function main() {
   const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8'));
   const version = manifest.version;
+  if (require('../manifest_electron.json').version !== version || require('../package.json').version !== version) {
+    throw new Error('Both extension manifests and package.json must have the same version.');
+  }
 
   // Generated twins must match their sources.
   require('./build-dataclasses.js');

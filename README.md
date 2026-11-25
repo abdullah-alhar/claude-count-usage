@@ -52,7 +52,7 @@ Install [Node.js](https://nodejs.org) if needed, then paste this into Terminal:
 
 The installer fetches the extension from GitHub and restarts Claude Desktop after installation.
 
-For a double-click launcher, keep **Install.app** next to **`install.command`** and open the app. It simply opens the same CLI installer in Terminal.
+For an existing Claude Desktop installation, the release ZIP also includes a graphical **Install.app**.
 
 To remove it, double-click **Uninstall.app** or run **`uninstall.command`**. This performs a full, clean uninstall of Claude Desktop rather than trying to patch it back — reinstall fresh from [claude.ai/download](https://claude.ai/download) afterward if you want to keep using Claude without the tracker.
 
@@ -66,7 +66,7 @@ Install [Node.js](https://nodejs.org) if needed, then paste this into PowerShell
 
 The installer fetches the extension from GitHub and restarts Claude Desktop after installation.
 
-For a double-click launcher, keep **Install.exe** next to **`install.bat`** and run the executable. It launches the same command-line installer.
+For an existing Claude Desktop installation, extract the release ZIP and open its graphical **Install.exe**.
 
 To remove it, run **`uninstall.bat`** — this fully uninstalls Claude Desktop rather than trying to patch it back; grab a fresh copy from [claude.ai/download](https://claude.ai/download) afterward if you want to keep using it.
 
@@ -74,11 +74,13 @@ To remove it, run **`uninstall.bat`** — this fully uninstalls Claude Desktop r
 
 ### Updating
 
-The tracker checks this repo's [latest release](https://github.com/abdullah-alhar/claude-count-usage/releases/latest) every 12 hours (turn this off under **Settings → Updates**, or use **Check for updates now**). When a release includes an update package, **Settings → Updates → Update now** downloads it, verifies its SHA-256, installs it and restarts Claude automatically — no browser download, no installer, no Terminal.
+The tracker checks for releases every 12 hours. To check sooner, open **Settings → Updates → Check for updates now**. **Update now** shows download and installation progress in Claude, verifies the package against GitHub’s release metadata, and restarts Claude. If the update fails, settings shows the reason and offers a retry. **Download installer manually** opens the separate installer download.
 
 The tracker lives in your own user folder (`~/Library/Application Support/ClaudeCountUsage` on macOS, `%APPDATA%\ClaudeCountUsage` on Windows), so updates never touch the signed Claude.app bundle and never ask for an admin password.
 
-If you are on a version older than 1.7, run the installer once more to switch to this layout; after that, updates are one click.
+The desktop manifests for 1.0.0, 1.2, 1.3, 1.4, 1.5 through 1.5.4, and 1.6.0 predate the in-app update bridge. For those versions, download the matching installer ZIP from the [latest release](https://github.com/abdullah-alhar/claude-count-usage/releases/latest), extract it, and open **Install.app** on macOS or **Install.exe** on Windows. The graphical installer requires Node.js and reopens Claude when setup finishes.
+
+Versions 1.7.0 and 1.7.1 have the bridge. Try **Check for updates now** in settings. If those builds show only a download link, the same graphical installer can upgrade the installed tracker to a version that reads the checksum directly from GitHub’s release API.
 
 **When Claude Desktop itself updates**, the update replaces the patched app with the official one, so the usage bars disappear after the restart that installs it. Run the installer again to bring them back. The tracker shows a notification when a Claude update has been downloaded.
 
@@ -92,7 +94,7 @@ If you are on a version older than 1.7, run the installer once more to switch to
 
 ## Building an update
 
-`scripts/build-package.js` produces the `ccu-extension.zip` consumed by the in-app updater, and `scripts/make-manifest.js` writes the release's checksummed `latest.json`. `scripts/build-cli-launchers.sh` rebuilds the lightweight Mac app that opens `install.command`; `Install.exe` similarly opens `install.bat`. Pushing a `v*` tag publishes the updater and both CLI-launcher ZIPs.
+`scripts/build-package.js` builds `ccu-extension.zip`, `scripts/build-migration-installers.sh` builds the two graphical installer ZIPs, and `scripts/make-manifest.js` writes `latest.json` for existing updaters. Run the Release workflow manually to stage a draft. Pushing a matching `v*` tag publishes after the workflow verifies the local package and the digests GitHub reports for the uploaded assets.
 
 ## Features
 

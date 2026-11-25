@@ -5,7 +5,8 @@
 // and the per-platform installers. When it is present the settings card can update in place; when
 // it is missing (older releases) the card falls back to linking the installer download.
 
-export const RELEASES_API_URL = 'https://api.github.com/repos/abdullah-alhar/claude-count-usage/releases/latest';
+const REPO = 'abdullah-alhar/claude-count-usage';
+export const RELEASES_API_URL = `https://api.github.com/repos/${REPO}/releases/latest`;
 export const MANIFEST_ASSET_NAME = 'latest.json';
 export const UPDATE_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000;
 export const UPDATE_STATUS_KEY = 'updateCheckStatus';
@@ -57,29 +58,22 @@ export function detectPlatform(userAgent) {
 //   "installers": { "mac": { "url": "…" }, "windows": { "url": "…" } }
 // }
 
-function isHttpsUrl(value) {
-	try { return new URL(value).protocol === 'https:'; } catch (e) { return false; }
+function releaseAsset(release, name) {
+	const tag = release?.tag_name;
+	if (!/^v\d+\.\d+\.\d+$/.test(tag || '')) return null;
+	const url = `https://github.com/${REPO}/releases/download/${tag}/${name}`;
+	return (release.assets || []).find(asset => asset.name === name && asset.browser_download_url === url) || null;
 }
 
-function normalizeAsset(asset) {
-	if (!asset || typeof asset !== 'object') return null;
-	if (!isHttpsUrl(asset.url)) return null;
-	const sha256 = typeof asset.sha256 === 'string' ? asset.sha256.trim().toLowerCase() : '';
-	if (!/^[a-f0-9]{64}$/.test(sha256)) return null;
-	return {
-		url: asset.url,
-		sha256,
-		size: Number.isFinite(asset.size) ? asset.size : null
-	};
+function normalizeDigest(value) {
+	const digest = String(value || '').toLowerCase();
+	return /^[a-f0-9]{64}$/.test(digest) ? digest : null;
 }
 
 export function findManifestAsset(release) {
-	const assets = Array.isArray(release?.assets) ? release.assets : [];
-	return assets.find(asset => (asset?.name || '').toLowerCase() === MANIFEST_ASSET_NAME && asset.browser_download_url) || null;
+	return releaseAsset(release, MANIFEST_ASSET_NAME);
 }
 
-// Fetches latest.json from the release. Never throws: a broken or missing manifest only disables
-// in-place updating, it must not make the version check itself fail.
 export async function fetchReleaseManifest(fetchImpl, release) {
 	const asset = findManifestAsset(release);
 	if (!asset) return null;
@@ -89,34 +83,54 @@ export async function fetchReleaseManifest(fetchImpl, release) {
 			credentials: 'omit',
 			cache: 'no-store'
 		});
-		if (!response.ok) return null;
-		const manifest = await response.json();
-		return manifest && typeof manifest === 'object' ? manifest : null;
-	} catch (e) {
+		return response.ok ? await response.json() : null;
+	} catch {
 		return null;
 	}
 }
 
+function selectUpdatePackage(release, manifest) {
+	const asset = releaseAsset(release, 'ccu-extension.zip');
+	if (!asset) return null;
+	const url = asset.browser_download_url;
+	const apiDigest = /^sha256:/i.test(asset.digest || '') && normalizeDigest(asset.digest.slice(7));
+	const manifestDigest = manifest?.version === release.tag_name.slice(1) && manifest.extension?.url === url
+		&& normalizeDigest(manifest.extension.sha256);
+	const sha256 = apiDigest || manifestDigest;
+	return sha256 ? { url, sha256, size: asset.size || manifest?.extension?.size || null } : null;
+}
+
 export function buildUpdateStatus(release, currentVersion, platform, now, manifest = null) {
-	const latestVersion = String(manifest?.version || release?.tag_name || release?.name || '').replace(/^v/i, '') || null;
-	if (!latestVersion) throw new Error('Release has no version tag');
-	// A tag like "New" compares as 0.0.0, which would silently report "up to date" forever.
-	if (versionParts(latestVersion).length === 0) throw new Error(`Latest release tag "${latestVersion}" is not a version number`);
-
-	const installer = platform === 'other' ? null : normalizeAsset(manifest?.installers?.[platform]);
-	const extension = normalizeAsset(manifest?.extension);
-
+	const latestVersion = String(release?.tag_name || '').replace(/^v/i, '');
+	if (!/^\d+\.\d+(?:\.\d+)?$/.test(latestVersion) || release.draft || release.prerelease) {
+		throw new Error('The latest GitHub release tag is not a version number for a stable release');
+	}
+	const extension = selectUpdatePackage(release, manifest);
+	const updateAvailable = compareVersions(latestVersion, currentVersion) > 0;
 	return {
 		currentVersion,
 		latestVersion,
-		updateAvailable: compareVersions(latestVersion, currentVersion) > 0,
+		updateAvailable,
 		releaseUrl: release.html_url || null,
-		downloadUrl: installer?.url || pickDownloadUrl(release, platform),
+		downloadUrl: pickDownloadUrl(release, platform),
 		extension,
-		notes: typeof manifest?.notes === 'string' ? manifest.notes.slice(0, 2000) : null,
+		packageError: updateAvailable && !extension ? 'This release does not have a verified automatic update package.' : null,
+		notes: manifest?.version === latestVersion && typeof manifest.notes === 'string' ? manifest.notes.slice(0, 2000) : null,
 		checkedAt: now,
 		error: null
 	};
+}
+
+export async function fetchUpdateStatus(fetchImpl, currentVersion, platform, now = Date.now()) {
+	const response = await fetchImpl(RELEASES_API_URL, {
+		headers: { 'Accept': 'application/vnd.github+json' },
+		credentials: 'omit',
+		cache: 'no-store'
+	});
+	if (!response.ok) throw new Error(`GitHub responded ${response.status}`);
+	const release = await response.json();
+	const manifest = selectUpdatePackage(release, null) ? null : await fetchReleaseManifest(fetchImpl, release);
+	return buildUpdateStatus(release, currentVersion, platform, now, manifest);
 }
 
 export function isStatusStale(status, now, maxAgeMs = UPDATE_CHECK_INTERVAL_MS) {
@@ -128,15 +142,7 @@ export function isStatusStale(status, now, maxAgeMs = UPDATE_CHECK_INTERVAL_MS) 
 export async function checkForUpdates({ fetchImpl, currentVersion, platform, now, getStorageValue, setStorageValue }) {
 	let status;
 	try {
-		const response = await fetchImpl(RELEASES_API_URL, {
-			headers: { 'Accept': 'application/vnd.github+json' },
-			credentials: 'omit',
-			cache: 'no-store'
-		});
-		if (!response.ok) throw new Error(`GitHub responded ${response.status}`);
-		const release = await response.json();
-		const manifest = await fetchReleaseManifest(fetchImpl, release);
-		status = buildUpdateStatus(release, currentVersion, platform, now, manifest);
+		status = await fetchUpdateStatus(fetchImpl, currentVersion, platform, now);
 	} catch (error) {
 		const previous = await getStorageValue(UPDATE_STATUS_KEY, null);
 		status = {

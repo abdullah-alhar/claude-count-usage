@@ -8,11 +8,14 @@ import { StoredMap } from './utils.js';
 
 const electronAlarms = new StoredMap('electronAlarms');
 
-async function postToMainProcess(prefix, payload) {
-	const tabs = await chrome.tabs.query({ url: '*://claude.ai/*' });
-	if (tabs.length === 0) return false;
+async function postToMainProcess(prefix, payload, tabId) {
+	if (tabId == null) {
+		const tabs = await chrome.tabs.query({ url: '*://claude.ai/*' });
+		tabId = tabs[0]?.id;
+	}
+	if (tabId == null) return false;
 	await chrome.scripting.executeScript({
-		target: { tabId: tabs[0].id },
+		target: { tabId },
 		func: (line) => { console.log(line); },
 		args: [prefix + JSON.stringify(payload)]
 	});
@@ -55,8 +58,8 @@ export async function createNotification(options) {
 
 // Asks the patched main process to download and install the update itself. It verifies the
 // SHA-256, swaps the user-folder copy, clears the service-worker cache and restarts Claude.
-export async function requestSelfUpdate({ url, sha256, version }) {
+export async function requestSelfUpdate({ url, sha256, version }, tabId) {
 	if (typeof url !== 'string' || !/^https:\/\//i.test(url)) return false;
 	if (typeof sha256 !== 'string' || !/^[a-f0-9]{64}$/i.test(sha256)) return false;
-	return await postToMainProcess('CUT_UPDATE:', { url, sha256, version: version || null });
+	return await postToMainProcess('CUT_UPDATE:', { url, sha256, version: version || null }, tabId);
 }

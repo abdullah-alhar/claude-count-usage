@@ -38,7 +38,7 @@ function asset(filePath) {
 
 function main() {
   const version = String(arg('--version') || '').replace(/^v/i, '');
-  if (!/^\d+\.\d+\.\d+/.test(version)) throw new Error('Pass --version x.y.z');
+  if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error('Pass --version x.y.z');
 
   const pkg = asset(arg('--package'));
   const mac = asset(arg('--mac'));
