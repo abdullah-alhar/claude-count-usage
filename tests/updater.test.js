@@ -231,15 +231,13 @@ function testApplyPackage() {
 		check(updater.readState(root).version === '1.7.0', 'records the installed version');
 		check(updater.readState(root).pendingRestart === true, 'marks a restart as pending');
 
-		let threw = false;
-		try {
-			fs.mkdirSync(path.join(pkg, 'extension'), { recursive: true });
-			fs.rmSync(path.join(pkg, 'runtime'), { recursive: true, force: true });
-			updater.applyUpdatePackage({ packageDir: pkg, root });
-		} catch (e) {
-			threw = /runtime\/wrapper-runtime\.js/.test(e.message);
-		}
-		check(threw, 'refuses a package without the runtime');
+		fs.rmSync(path.join(pkg, 'runtime'), { recursive: true, force: true });
+		assert.throws(() => updater.applyUpdatePackage({ packageDir: pkg, root }), {
+			code: 'ENOENT',
+			path: path.join(pkg, 'runtime', 'wrapper-runtime.js')
+		});
+		check(updater.readExtensionVersion(updater.extensionDir(root)) === result.version,
+			'refuses a package without the runtime and keeps the installed version');
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });
 		fs.rmSync(pkg, { recursive: true, force: true });
