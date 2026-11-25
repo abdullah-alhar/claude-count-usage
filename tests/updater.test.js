@@ -15,6 +15,7 @@ const os = require('os');
 const path = require('path');
 const zlib = require('zlib');
 const assert = require('assert');
+const { pathToFileURL } = require('url');
 
 const rootDir = path.join(__dirname, '..');
 const updater = require(path.join(rootDir, 'ccu-update.js'));
@@ -118,7 +119,7 @@ function makeZip(entries) {
 
 async function testManifestParsing() {
 	console.log('\n=== 1. latest.json manifest parsing ===');
-	const uc = await import('file://' + path.join(rootDir, 'bg-components', 'update-check.js'));
+	const uc = await import(pathToFileURL(path.join(rootDir, 'bg-components', 'update-check.js')).href);
 
 	const sha = 'a'.repeat(64);
 	const release = {
