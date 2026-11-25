@@ -285,11 +285,42 @@ async function testChecksumAsync() {
 	}
 }
 
+function testUploadedReleaseAssets() {
+	console.log('\n=== 5. Uploaded release assets ===');
+	const { verifyUploadedAssets } = require('../scripts/verify-release.js');
+	const base = 'https://github.com/abdullah-alhar/claude-count-usage/releases';
+	const tag = 'v1.7.1';
+	const temporaryTag = 'untagged-3c5545109e36427844f1';
+	const expected = {
+		name: 'ccu-extension.zip',
+		browser_download_url: `${base}/download/${tag}/ccu-extension.zip`,
+		size: 1234,
+		digest: 'sha256:' + 'a'.repeat(64)
+	};
+	const uploadedAsset = {
+		...expected,
+		browser_download_url: `${base}/download/${temporaryTag}/ccu-extension.zip`
+	};
+	const draft = { tag_name: tag, draft: true, html_url: `${base}/tag/${temporaryTag}`, assets: [uploadedAsset] };
+
+	verifyUploadedAssets(draft, tag, [expected]);
+	verifyUploadedAssets({ ...draft, draft: false, assets: [expected] }, tag, [expected]);
+	assert.throws(() => verifyUploadedAssets({ ...draft, draft: false }, tag, [expected]), /browser_download_url/);
+	assert.throws(() => verifyUploadedAssets({
+		...draft, assets: [{ ...uploadedAsset, digest: 'sha256:' + 'b'.repeat(64) }]
+	}, tag, [expected]), /digest/);
+	assert.throws(() => verifyUploadedAssets({
+		...draft, html_url: `${base}/tag/untagged-aaaa`
+	}, tag, [expected]), /browser_download_url/);
+	check(true, 'verifies GitHub draft and published assets and rejects mismatched URLs and digests');
+}
+
 (async () => {
 	await testManifestParsing();
 	testZipExtraction();
 	testApplyPackage();
 	await testChecksumAsync();
+	testUploadedReleaseAssets();
 
 	console.log('\n======================================================');
 	console.log(`  ${passed} passed, ${failed} failed`);

@@ -7,6 +7,26 @@ const path = require('node:path');
 const os = require('node:os');
 const updater = require('../ccu-update.js');
 
+const RELEASE_BASE = 'https://github.com/abdullah-alhar/claude-count-usage/releases';
+
+function verifyUploadedAssets(uploaded, tag, assets) {
+  assert.equal(uploaded.tag_name, tag);
+  const releasePage = RELEASE_BASE + '/tag/';
+  const draftTag = uploaded.draft === true && uploaded.html_url?.startsWith(releasePage)
+    ? uploaded.html_url.slice(releasePage.length)
+    : null;
+  const downloadTag = /^untagged-[0-9a-f]+$/.test(draftTag) ? draftTag : tag;
+
+  for (const expected of assets) {
+    const actual = uploaded.assets.find(asset => asset.name === expected.name);
+    assert.ok(actual, 'Missing uploaded asset ' + expected.name);
+    assert.equal(actual.size, expected.size, expected.name + ' size');
+    assert.equal(actual.digest, expected.digest, expected.name + ' digest');
+    assert.equal(actual.browser_download_url, `${RELEASE_BASE}/download/${downloadTag}/${expected.name}`,
+      expected.name + ' browser_download_url');
+  }
+}
+
 async function main() {
   const dist = path.resolve(process.argv[2] || 'dist');
   const manifestPath = path.join(dist, 'latest.json');
@@ -16,7 +36,6 @@ async function main() {
   for (const file of ['../manifest.json', '../package.json']) assert.equal(require(file).version, version);
 
   const tag = 'v' + version;
-  const base = 'https://github.com/abdullah-alhar/claude-count-usage/releases';
   const assets = [];
   for (const [name, metadata] of [
     ['ccu-extension.zip', manifest.extension],
@@ -27,20 +46,15 @@ async function main() {
     const file = path.join(dist, name);
     const size = fs.statSync(file).size;
     const sha256 = await updater.sha256File(file);
-    const url = `${base}/download/${tag}/${name}`;
+    const url = `${RELEASE_BASE}/download/${tag}/${name}`;
     if (metadata) assert.deepEqual(metadata, { url, size, sha256 });
     assets.push({ name, browser_download_url: url, size, digest: 'sha256:' + sha256 });
   }
 
-  const release = { tag_name: tag, html_url: `${base}/tag/${tag}`, assets };
+  const release = { tag_name: tag, html_url: `${RELEASE_BASE}/tag/${tag}`, assets };
   if (process.argv[3]) {
     const uploaded = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
-    assert.equal(uploaded.tag_name, tag);
-    for (const expected of assets) {
-      const actual = uploaded.assets.find(asset => asset.name === expected.name);
-      assert.ok(actual, 'Missing uploaded asset ' + expected.name);
-      for (const key of Object.keys(expected)) assert.equal(actual[key], expected[key], expected.name + ' ' + key);
-    }
+    verifyUploadedAssets(uploaded, tag, assets);
   }
 
   const { buildUpdateStatus } = await import('../bg-components/update-check.js');
@@ -63,7 +77,11 @@ async function main() {
   console.log('Verified release metadata, asset hashes and automatic installation of ' + version);
 }
 
-main().catch(error => {
-  console.error(error);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch(error => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = { verifyUploadedAssets };
