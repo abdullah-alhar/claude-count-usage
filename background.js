@@ -5,7 +5,7 @@ import { tokenStorageManager, tokenCounter } from './bg-components/tokenManageme
 import { getStrategy } from './bg-components/container-strategy.js';
 import { UsageData, modelFamilyFromVersion, defaultModelForTier, defaultModelVersionForTier } from './shared/dataclasses.js';
 import { translate, normalizeLocale } from './shared/localization.js';
-import { scheduleAlarm, getAlarm, clearAlarm, rearmAlarms, createNotification } from './bg-components/electron-compat.js';
+import { scheduleAlarm, getAlarm, clearAlarm, rearmAlarms, createNotification, requestSelfUpdate } from './bg-components/electron-compat.js';
 import { checkForUpdates, detectPlatform, isStatusStale, UPDATE_CHECK_INTERVAL_MS, UPDATE_STATUS_KEY, AUTO_UPDATE_CHECK_KEY } from './bg-components/update-check.js';
 import { invalidateAccountSettings, invalidateProfileTokens, storeSseUsage } from './bg-components/claude-api.js';
 
@@ -1121,6 +1121,23 @@ messageRegistry.register('getUpdateStatus', async () => ({
 
 // Manual check: deliberately ignores the automatic-check toggle and the staleness window.
 messageRegistry.register('checkForUpdatesNow', () => runUpdateCheck());
+
+// Hands the update package to the patched main process. Returns a reason instead of throwing so
+// the settings card can fall back to the installer download when the bridge is unavailable (web
+// install, older desktop patch, or no claude.ai tab open).
+messageRegistry.register('applyUpdate', async () => {
+	const status = await getStorageValue(UPDATE_STATUS_KEY, null);
+	const extension = status?.extension;
+	if (!extension?.url || !extension?.sha256) {
+		return { ok: false, error: 'no-package' };
+	}
+	const sent = await requestSelfUpdate({
+		url: extension.url,
+		sha256: extension.sha256,
+		version: status.latestVersion || null
+	});
+	return sent ? { ok: true, version: status.latestVersion || null } : { ok: false, error: 'bridge-unavailable' };
+});
 
 messageRegistry.register('setAutoUpdateCheck', async (message) => {
 	await setStorageValue(AUTO_UPDATE_CHECK_KEY, !!message.value);

@@ -145,6 +145,9 @@ const REQUIRED_SETTINGS_KEYS = [
 	'settings.update_version', 'settings.update_up_to_date', 'settings.update_available', 'settings.update_download',
 	'settings.update_release_notes', 'settings.update_how_mac', 'settings.update_how_windows', 'settings.update_how_other',
 	'settings.update_error', 'settings.update_checked_at', 'settings.update_never',
+	'settings.update_now', 'settings.update_starting', 'settings.update_downloading', 'settings.update_verifying',
+	'settings.update_installing', 'settings.update_restarting', 'settings.update_in_progress', 'settings.update_retry',
+	'settings.update_failed', 'settings.update_bridge_unavailable', 'settings.update_no_package',
 	'settings.language_label', 'settings.language_auto', 'settings.language_reload_hint', 'settings.language_reload',
 	'settings.debug_hint', 'settings.debug_show', 'settings.debug_hide', 'settings.debug_copy',
 	'settings.debug_copied', 'settings.debug_empty', 'common.debug_logs', 'usage.starts_next_message',
@@ -1165,7 +1168,8 @@ console.log('\n=== 15. Desktop install / init regressions ===');
 		const body = inj.match(new RegExp('function ' + cmd + '\\([^)]*\\) \\{([\\s\\S]*?)\\n\\}'))?.[1] || '';
 		assert(body.includes('clearServiceWorkerCache()'), `${cmd} clears the cached service worker`);
 	}
-	assert(/'Service Worker'/.test(inj) && !/rmSync\([^)]*Local Extension Settings/.test(inj),
+	const updateEngine = fs.readFileSync(path.join(rootDir, 'ccu-update.js'), 'utf8');
+	assert(/'Service Worker'/.test(updateEngine) && !/rmSync\([^)]*Local Extension Settings/.test(inj + updateEngine),
 		'only the service worker cache is cleared, never chrome.storage (Local Extension Settings)');
 }
 
@@ -1280,8 +1284,10 @@ console.log('\n=== 19. Claude Desktop: Squirrel updates install instead of crash
 	const cleanup = injector.match(/function cleanupMacLeftovers\(appPath\) \{([\s\S]*?)\n\}/)?.[1] || '';
 	assert(cleanup && !/Squirrel\.framework/.test(cleanup), 'leftover cleanup leaves the Squirrel framework alone');
 	const wrapper = injector.slice(injector.indexOf('function generateWrapperSource'), injector.indexOf('// ─── Process & Lock Management'));
-	assert(/autoUpdater\.once\('update-downloaded'/.test(wrapper), 'the wrapper tells the user to re-run the installer once an update is downloaded');
-	assert(!/autoUpdater\.(checkForUpdates|quitAndInstall)\s*=/.test(wrapper), 'the wrapper does not disable Claude\'s own updater');
+	const runtime = fs.readFileSync(path.join(rootDir, 'wrapper-runtime.js'), 'utf8');
+	assert(/autoUpdater\.once\('update-downloaded'/.test(runtime), 'the runtime tells the user to re-run the installer once an update is downloaded');
+	assert(!/autoUpdater\.(checkForUpdates|quitAndInstall)\s*=/.test(runtime), 'the wrapper does not disable Claude\'s own updater');
+	assert(/wrapper-runtime\.js/.test(wrapper), 'the asar bootstrap loads the updateable runtime from the user folder');
 }
 
 console.log('\n=== 20. Claude Desktop: the completion-stream watcher actually runs ===');

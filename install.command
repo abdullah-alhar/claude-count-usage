@@ -67,7 +67,7 @@ curl -fsSL "$GITHUB_ZIP" -o "$ZIP_PATH" || fail "Failed to download extension fi
 unzip -q "$ZIP_PATH" -d "$TMP_DOWNLOAD" || fail "Failed to unpack extension archive."
 
 EXT_DIR="$TMP_DOWNLOAD/claude-count-usage-main"
-if [ ! -f "$EXT_DIR/manifest_electron.json" ] || [ ! -f "$EXT_DIR/desktop-injector.js" ]; then
+if [ ! -f "$EXT_DIR/manifest_electron.json" ] || [ ! -f "$EXT_DIR/desktop-injector.js" ] || [ ! -f "$EXT_DIR/wrapper-runtime.js" ] || [ ! -f "$EXT_DIR/ccu-update.js" ]; then
   fail "Archive did not contain expected extension files."
 fi
 log "Downloaded extension files from GitHub"

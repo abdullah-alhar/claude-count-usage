@@ -20,7 +20,8 @@ Claude Count Usage tracks how much of your Claude.ai token quota you have used. 
 
 All processing happens locally inside the Claude Desktop app. No analytics service is contacted. The only request made outside claude.ai is:
 
-- **Update check (on by default, can be turned off):** a plain `GET https://api.github.com/repos/abdullah-alhar/claude-count-usage/releases/latest` every 12 hours, or when you click *Check for updates now*. Nothing is sent with it — no identifiers, no usage data, no cookies. GitHub sees an ordinary request from your IP address, as with any web page. Turn it off under **Settings → Updates**; the manual button still works.
+- **Update check (on by default, can be turned off):** a plain `GET https://api.github.com/repos/abdullah-alhar/claude-count-usage/releases/latest` every 12 hours, or when you click *Check for updates now*. If the release ships an update manifest (`latest.json`), the same check also reads it to show the changelog and enable the one-click update. Nothing is sent with these requests — no identifiers, no usage data, no cookies. GitHub sees an ordinary request from your IP address, as with any web page. Turn it off under **Settings → Updates**; the manual button still works.
+- **Installing an update (only when you click *Update now*):** the tracker downloads the release's `ccu-extension.zip` from GitHub, verifies its SHA-256 against the manifest, and writes it to your own user folder. No account data or usage information is included or sent.
 
 | Data | What happens to it |
 |---|---|
@@ -64,6 +65,7 @@ The extension **reads** these responses. It does **not** modify them, block them
 | `scripting` | Pass timers and notifications to the Claude Desktop app (it has no native extension alarms) |
 | Host: `claude.ai` | Read your usage and conversation structure |
 | Host: `api.github.com` | The optional update check described above |
+| Host: `objects.githubusercontent.com` | Reads the release's `latest.json` update manifest |
 
 ---
 

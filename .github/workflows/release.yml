@@ -1,0 +1,75 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v1.7.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish update
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - id: version
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          VERSION="${TAG#v}"
+          MANIFEST=$(node -p "require('./manifest.json').version")
+          if [ "$VERSION" != "$MANIFEST" ]; then
+            echo "::error::Tag $TAG does not match manifest.json version $MANIFEST"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Test
+        run: npm test
+
+      - name: Build automatic-update package
+        run: node scripts/build-package.js
+
+      - name: Build and package CLI launchers
+        shell: bash
+        run: |
+          bash scripts/build-cli-launchers.sh
+          mkdir -p dist
+          zip -qry dist/Mac.installer.zip Install.app install.command
+          zip -qj dist/windows.installer.zip Install.exe install.bat
+
+      - name: Build latest.json
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          node scripts/make-manifest.js \
+            --version "$VERSION" \
+            --package dist/ccu-extension.zip \
+            --mac dist/Mac.installer.zip \
+            --windows dist/windows.installer.zip \
+            --notes "See the GitHub release notes for details." \
+            --out dist/latest.json
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: ${{ github.event.inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          files: |
+            dist/latest.json
+            dist/ccu-extension.zip
+            dist/Mac.installer.zip
+            dist/windows.installer.zip

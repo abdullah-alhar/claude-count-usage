@@ -52,3 +52,11 @@ export async function rearmAlarms() {
 export async function createNotification(options) {
 	await postToMainProcess('CUT_NOTIFICATION:', options);
 }
+
+// Asks the patched main process to download and install the update itself. It verifies the
+// SHA-256, swaps the user-folder copy, clears the service-worker cache and restarts Claude.
+export async function requestSelfUpdate({ url, sha256, version }) {
+	if (typeof url !== 'string' || !/^https:\/\//i.test(url)) return false;
+	if (typeof sha256 !== 'string' || !/^[a-f0-9]{64}$/i.test(sha256)) return false;
+	return await postToMainProcess('CUT_UPDATE:', { url, sha256, version: version || null });
+}

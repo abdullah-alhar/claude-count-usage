@@ -20,8 +20,10 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const { execFileSync, spawn, spawnSync } = require('child_process');
+const updater = require('./ccu-update.js');
 
 const MARKER = '// __CLAUDE_COUNT_USAGE_WRAPPER__';
+const RUNTIME_FILES = ['wrapper-runtime.js', 'ccu-update.js'];
 
 // ─── Platform & Paths ───────────────────────────────────────
 
@@ -568,253 +570,37 @@ function tryLoadAsar(asarPath) {
 // ─── Wrapper Source ─────────────────────────────────────────
 
 function generateWrapperSource(relativeMainPath) {
+  // Deliberately tiny and dependency-free. Everything that changes between releases lives in
+  // the user's folder (runtime/ + extension/), so this file is written once by the installer and
+  // never needs to be rewritten by an update - which keeps the signed app bundle untouched.
   return `'use strict';
 ${MARKER}
-// Claude Count Usage — Desktop Extension Injector & Event Bridge
 require('events').EventEmitter.defaultMaxListeners = 100;
-const { app, session, Notification, webContents } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 
-const EXTENSION_DIR = path.join(process.resourcesPath, 'injected-extension');
-
-// ── Startup timing log ──
-// One line per startup milestone in <Claude logs>/ccu-startup.log (on Windows usually
-// %LOCALAPPDATA%\\Claude\\logs, on macOS ~/Library/Logs/Claude). Claude's own logs don't show
-// when the window got content or why it stayed black, and that is the first thing needed
-// when someone reports a slow start. Lines before app-ready are buffered (logs path not final yet).
-// Measured from the OS process creation time where Electron provides it, so time spent before any
-// JS runs (antivirus scanning the patched, no longer signed exe, slow disk) shows up as the
-// offset of "wrapper loaded".
-const startupT0 = (typeof process.getCreationTime === 'function' && process.getCreationTime()) || (Date.now() - Math.round(process.uptime() * 1000));
-const STARTUP_WATCH_MS = 3 * 60 * 1000;
-let startupLogPath = null;
-const startupBuffer = [];
-function appendStartupLine(line) {
-  try { fs.appendFileSync(startupLogPath, line + '\\n'); } catch {}
+function ccuRoot() {
+  if (process.platform === 'darwin') return path.join(os.homedir(), 'Library', 'Application Support', 'ClaudeCountUsage');
+  if (process.platform === 'win32') return path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'ClaudeCountUsage');
+  return path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'ClaudeCountUsage');
 }
-function startupLog(event, detail) {
-  if (Date.now() - startupT0 > STARTUP_WATCH_MS && !/gone|unresponsive|fail/.test(event)) return;
-  const line = '+' + (Date.now() - startupT0) + 'ms ' + event + (detail ? ' ' + detail : '');
-  if (startupLogPath) appendStartupLine(line); else startupBuffer.push(line);
-}
-startupLog('wrapper loaded');
-app.whenReady().then(() => {
-  try {
-    const dir = app.getPath('logs');
-    fs.mkdirSync(dir, { recursive: true });
-    startupLogPath = path.join(dir, 'ccu-startup.log');
-    try { if (fs.statSync(startupLogPath).size > 256 * 1024) fs.renameSync(startupLogPath, startupLogPath + '.old'); } catch {}
-    appendStartupLine('==== ' + new Date(startupT0).toISOString() + ' Claude ' + app.getVersion() + ' ' + process.platform + '/' + process.arch +
-      ' windowsStore=' + !!process.windowsStore + ' exe=' + process.execPath);
-    startupBuffer.splice(0).forEach(appendStartupLine);
-  } catch {}
-  startupLog('app ready');
-});
-app.on('child-process-gone', (_e, d) => startupLog('child-process-gone', d.type + ' reason=' + d.reason + ' exit=' + d.exitCode + (d.name ? ' name=' + d.name : '')));
-app.on('render-process-gone', (_e, _wc, d) => startupLog('render-process-gone', 'reason=' + d.reason + ' exit=' + d.exitCode));
-app.on('browser-window-created', (_e, win) => {
-  startupLog('window created');
-  win.on('unresponsive', () => startupLog('window unresponsive'));
-  win.on('responsive', () => startupLog('window responsive again'));
-});
 
-// ── Extension loader: defaultSession, plus any other session that shows claude.ai ──
-// claude.ai normally renders in defaultSession, but if Claude Desktop ever moves
-// it to its own partition the content scripts must follow it there. Other
-// partitions (Cowork file previews, launch previews, ...) never show claude.ai,
-// and loading the extension into them starts another copy of its background
-// worker for nothing, so a session only gets it once one of its pages
-// navigates to claude.ai. A WeakSet avoids loading twice into one session.
-const loadedSessions = new WeakSet();
-const isClaudeUrl = (url) => /^https:\\/\\/([a-z0-9-]+\\.)*claude\\.ai(\\/|$)/i.test(url || '');
-
-async function loadIntoSession(sess) {
-  if (!sess || loadedSessions.has(sess)) return;
-  loadedSessions.add(sess);
-  const started = Date.now();
+const candidates = [
+  path.join(ccuRoot(), 'runtime', 'wrapper-runtime.js'),
+  path.join(process.resourcesPath || '', 'injected-extension', 'wrapper-runtime.js')
+];
+let loaded = false;
+for (const file of candidates) {
+  if (loaded) break;
   try {
-    // session.loadExtension is deprecated in current Electron and will be removed; Claude
-    // updates its Electron on its own schedule, so prefer the replacement when it exists.
-    const loader = sess.extensions && typeof sess.extensions.loadExtension === 'function' ? sess.extensions : sess;
-    await loader.loadExtension(EXTENSION_DIR, { allowFileAccess: true });
-    console.log('[CCU] Extension loaded into session');
-    startupLog('extension loaded', 'in ' + (Date.now() - started) + 'ms');
+    if (fs.existsSync(file)) { require(file); loaded = true; }
   } catch (err) {
-    console.error('[CCU] Failed to load extension into session:', err);
-    startupLog('extension load failed', String(err && err.message || err));
+    console.error('[CCU] Runtime failed to load from', file, err);
   }
 }
+if (!loaded) console.error('[CCU] Tracker runtime not found; Claude will start without usage tracking.');
 
-async function loadExtensionEverywhere() {
-  if (!fs.existsSync(EXTENSION_DIR)) {
-    console.log('[CCU] No extension folder found at', EXTENSION_DIR);
-    return;
-  }
-  await loadIntoSession(session.defaultSession);
-  const followClaude = (wc) => {
-    if (isClaudeUrl(wc.getURL())) loadIntoSession(wc.session);
-    wc.on('did-start-navigation', (ev, url) => {
-      if (isClaudeUrl(typeof url === 'string' ? url : ev && ev.url)) loadIntoSession(wc.session);
-    });
-  };
-  for (const wc of webContents.getAllWebContents()) followClaude(wc);
-  app.on('web-contents-created', (_event, wc) => followClaude(wc));
-  console.log('[CCU] Claude Count Usage extension loaded from', EXTENSION_DIR);
-}
-
-// ── Polyfill bridge (alarms, notifications, tab events) ──
-let mainWindow = null;
-let claudeWebContents = null;
-let polyfillsReady = false;
-const alarms = new Map();
-
-function fireAlarm(name) {
-  if (claudeWebContents) {
-    claudeWebContents.executeJavaScript(
-      "window.dispatchEvent(new CustomEvent('electronAlarmFired', { detail: { name: " + JSON.stringify(name) + " } }));"
-    ).catch(() => {});
-  }
-}
-
-function setupPolyfills() {
-  if (polyfillsReady || !mainWindow || !claudeWebContents) return;
-  polyfillsReady = true;
-
-  claudeWebContents.on('console-message', (event) => {
-    const msg = (event && event.message) || '';
-    if (msg.startsWith('CUT_ALARM:')) {
-      try {
-        const data = JSON.parse(msg.substring(10));
-        if (data.action === 'create') {
-          const existing = alarms.get(data.name);
-          if (existing) clearTimeout(existing.timerId);
-          let timerId;
-          if (data.periodInMinutes) {
-            timerId = setInterval(() => fireAlarm(data.name), data.periodInMinutes * 60 * 1000);
-          } else if (data.when) {
-            const delay = data.when - Date.now();
-            if (delay <= 0) {
-              fireAlarm(data.name);
-            } else {
-              timerId = setTimeout(() => { fireAlarm(data.name); alarms.delete(data.name); }, delay);
-            }
-          } else if (data.delayInMinutes) {
-            timerId = setTimeout(() => { fireAlarm(data.name); alarms.delete(data.name); }, data.delayInMinutes * 60 * 1000);
-          }
-          if (timerId) alarms.set(data.name, { timerId });
-        } else if (data.action === 'clear') {
-          const entry = alarms.get(data.name);
-          if (entry) {
-            clearTimeout(entry.timerId);
-            alarms.delete(data.name);
-          }
-        }
-      } catch (e) {
-        console.error('[CCU] Alarm error:', e);
-      }
-      return;
-    }
-
-    if (msg.startsWith('CUT_NOTIFICATION:')) {
-      try {
-        const content = msg.substring(17);
-        let opts;
-        try { opts = JSON.parse(content); } catch (e) { opts = { title: 'Claude Count Usage', message: content }; }
-        if (Notification && Notification.isSupported && Notification.isSupported()) {
-          new Notification({
-            title: opts.title || 'Claude Count Usage',
-            body: opts.message || opts.body || ''
-          }).show();
-        }
-      } catch (e) {
-        console.error('[CCU] Notification error:', e);
-      }
-      return;
-    }
-  });
-
-  mainWindow.on('focus', () => {
-    claudeWebContents && claudeWebContents.executeJavaScript(
-      "window.dispatchEvent(new CustomEvent('electronTabActivated', { detail: { tabId: 1, windowId: 1 } }));"
-    ).catch(() => {});
-  });
-
-  mainWindow.on('blur', () => {
-    claudeWebContents && claudeWebContents.executeJavaScript(
-      "window.dispatchEvent(new CustomEvent('electronTabDeactivated', { detail: { tabId: 1, windowId: 1 } }));"
-    ).catch(() => {});
-  });
-}
-
-app.on('browser-window-created', (event, win) => {
-  if (!mainWindow) {
-    mainWindow = win;
-    setupPolyfills();
-  }
-});
-
-app.on('web-contents-created', (event, contents) => {
-  // Relay only the tracker's own lines. Matching anything containing "Error" echoed most of
-  // claude.ai's console into the main process during startup.
-  contents.on('console-message', (ev, level, message) => {
-    const text = typeof message === 'string' ? message : (typeof level === 'string' ? level : ((ev && ev.message) || ''));
-    if (text.startsWith('[CCU]') || text.startsWith('[UsageTracker]')) {
-      console.log('[Renderer]', text);
-    }
-  });
-
-  if (claudeWebContents) return;
-  const check = (url) => {
-    if (claudeWebContents) return;
-    if (isClaudeUrl(url) || (url && url.includes('localhost'))) {
-      claudeWebContents = contents;
-      setupPolyfills();
-      watchClaudeLoad(contents, url);
-    }
-  };
-  contents.on('did-start-navigation', (_ev, url) => check(url || ''));
-  contents.once('dom-ready', () => check(contents.getURL()));
-});
-
-// Logs the claude.ai view's load milestones: the gap between "window created" and
-// "claude.ai loaded" is the black screen the user sees.
-function watchClaudeLoad(contents, firstUrl) {
-  const short = (u) => String(u || '').split('?')[0].slice(0, 80);
-  startupLog('claude.ai navigation', short(firstUrl));
-  contents.once('dom-ready', () => startupLog('claude.ai dom-ready', short(contents.getURL())));
-  contents.once('did-finish-load', () => {
-    startupLog('claude.ai loaded', short(contents.getURL()));
-    // When each helper process (GPU, renderers, utilities - all the same exe) was started. Late
-    // starts point at the exe being scanned on every launch rather than at the page itself.
-    try {
-      const procs = app.getAppMetrics().map((m) => m.type + '@+' + Math.max(0, Math.round(m.creationTime - startupT0)) + 'ms');
-      startupLog('processes', procs.join(' '));
-    } catch {}
-  });
-  contents.on('did-fail-load', (_e, code, desc, url, isMainFrame) => {
-    if (isMainFrame) startupLog('claude.ai load failed', code + ' ' + desc + ' ' + short(url));
-  });
-}
-
-app.whenReady().then(loadExtensionEverywhere);
-
-// A Claude update replaces this patched app with the official one, so the tracker is gone after the
-// restart that installs it. Say so once, so a missing usage bar isn't a mystery.
-try {
-  const { autoUpdater } = require('electron');
-  autoUpdater.once('update-downloaded', () => {
-    try {
-      if (!Notification.isSupported()) return;
-      new Notification({
-        title: 'Claude Count Usage',
-        body: 'Claude will update the next time it restarts. Run the Claude Count Usage installer again afterwards to bring back usage tracking.'
-      }).show();
-    } catch {}
-  });
-} catch {}
-
-// Boot original application
 require(${JSON.stringify(relativeMainPath)});
 `;
 }
@@ -934,11 +720,12 @@ async function patchAsar(asarPath, extensionDir) {
   let originalMain = pkg._originalMain;
 
   // Check if target file already has our wrapper
+  let currentMainBuf = null;
   const currentMainNode = getNode(header, currentMain);
   if (currentMainNode) {
-    const currentMainBuf = readFileFromAsar(asarPath, dataOffset, currentMainNode);
+    currentMainBuf = readFileFromAsar(asarPath, dataOffset, currentMainNode);
     if (currentMainBuf && currentMainBuf.toString('utf8').includes(MARKER)) {
-      console.log('app.asar already has Claude Count Usage wrapper installed; refreshing wrapper & extension...');
+      console.log('app.asar already has the Claude Count Usage bootstrap; checking for changes...');
       if (!originalMain) {
         if (getNode(header, '.vite/build/index.pre.js')) {
           originalMain = '.vite/build/index.pre.js';
@@ -963,6 +750,14 @@ async function patchAsar(asarPath, extensionDir) {
   const relativeRequire = './' + path.relative(path.dirname(wrapperRelPath), originalMain).replace(/\\/g, '/');
   const wrapperSource = generateWrapperSource(relativeRequire);
   const wrapperBuf = Buffer.from(wrapperSource, 'utf8');
+
+  // Normal updates only replace files in the user folder. The asar is rewritten once (to install
+  // this bootstrap) and then never again, which avoids re-signing and touching a running bundle.
+  if (currentMainBuf && pkg.main === wrapperRelPath && currentMainBuf.toString('utf8') === wrapperSource) {
+    console.log('app.asar bootstrap is already up to date; skipping asar rewrite.');
+    installExtensionFolder(path.join(resourcesDir, 'injected-extension'), extensionDir);
+    return { asarPath, backupAsar: null, alreadyPatched: true };
+  }
 
   // Update package.json
   pkg._originalMain = originalMain;
@@ -1111,8 +906,8 @@ async function patchAsar(asarPath, extensionDir) {
     }
   }
 
-  // Copy extension folder next to asar
-  installExtensionFolder(resourcesDir, extensionDir);
+  // Seed copy next to asar: used as a fallback if the user-folder copy is ever missing.
+  installExtensionFolder(path.join(resourcesDir, 'injected-extension'), extensionDir);
 
   return { asarPath, backupAsar, alreadyPatched: false };
 }
@@ -1132,6 +927,7 @@ function shouldIgnoreExtensionEntry(name) {
   // Repo-only folders and installer icons: never loaded by the extension, just more files for
   // Claude to carry and for antivirus to scan
   if (lower === 'tests' || lower === 'scripts' || lower === 'assets') return true;
+  if (lower === 'installer' || lower === 'build' || lower === 'dist') return true;
   if (lower.endsWith('.icns') || lower.endsWith('.ico')) return true;
 
   // macOS app bundles (e.g. Install.app, Uninstall.app with Icon\r)
@@ -1207,8 +1003,7 @@ function copyExtensionDirRecursive(srcDir, destDir) {
   }
 }
 
-function installExtensionFolder(resourcesDir, extensionDir) {
-  const destExtDir = path.join(resourcesDir, 'injected-extension');
+function installExtensionFolder(destExtDir, extensionDir) {
   console.log('Installing extension to:', destExtDir);
 
   // Clean junk like Thumbs.db from source folder if present
@@ -1240,6 +1035,56 @@ function installExtensionFolder(resourcesDir, extensionDir) {
   if (!fs.existsSync(manifestDest)) {
     throw new Error(`Extension installation failed: manifest.json missing in ${destExtDir}`);
   }
+}
+
+// ─── User-folder install (the updateable half) ─────────────
+//
+// The extension and runtime live outside Claude.app so updates never modify the signed bundle.
+// The bootstrap inside app.asar loads them from here, with the bundled copy as a fallback.
+
+function readExtensionVersion(extensionDir) {
+  for (const name of ['manifest.json', 'manifest_electron.json']) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(path.join(extensionDir, name), 'utf8'));
+      if (parsed && parsed.version) return String(parsed.version);
+    } catch {}
+  }
+  return null;
+}
+
+function installUserRuntime(extensionDir) {
+  const root = updater.ccuRoot();
+  const destExtension = updater.extensionDir(root);
+  const destRuntime = updater.runtimeDir(root);
+
+  for (const file of RUNTIME_FILES) {
+    if (!fs.existsSync(path.join(extensionDir, file))) {
+      throw new Error(`Installer is missing ${file}; re-download the installer.`);
+    }
+  }
+
+  fs.mkdirSync(root, { recursive: true });
+
+  // Replace the previous version, keeping a rollback copy until the next successful update.
+  installExtensionFolder(destExtension, extensionDir);
+
+  fs.rmSync(destRuntime, { recursive: true, force: true });
+  fs.mkdirSync(destRuntime, { recursive: true });
+  for (const file of RUNTIME_FILES) {
+    fs.copyFileSync(path.join(extensionDir, file), path.join(destRuntime, file));
+  }
+
+  const version = readExtensionVersion(extensionDir);
+  const previous = updater.readState(root);
+  updater.writeState(root, {
+    version: version || previous.version || null,
+    previousVersion: previous.version && previous.version !== version ? previous.version : previous.previousVersion || null,
+    installedAt: new Date().toISOString(),
+    pendingRestart: false
+  });
+
+  console.log('Installed tracker files to:', root);
+  return { root, extensionDir: destExtension, runtimeDir: destRuntime, version };
 }
 
 function unpatchAsar(asarPath) {
@@ -1805,35 +1650,12 @@ $s2.Save()
 // ─── High-Level CLI Actions ─────────────────────────────────
 
 // Chromium keeps an extension's registered service worker, and serves its cached script, across
-// app restarts. After an install that changes background.js, Claude Desktop kept running the old
-// cached background (observed: new content scripts talking to an old background that had no
-// handlers for their messages). Claude is closed by the time this runs, so dropping the whole
-// cache is safe: claude.ai's own worker re-registers on the next launch, and the extension's
-// registers from the freshly installed files. chrome.storage data lives elsewhere and is kept.
+// app restarts. After an update that changes background.js, Claude Desktop would otherwise keep
+// running the old cached background. The shared implementation lives in ccu-update.js so the
+// in-app updater clears exactly the same cache.
 function clearServiceWorkerCache() {
-  const userDataDirs = process.platform === 'darwin'
-    ? [path.join(os.homedir(), 'Library', 'Application Support', 'Claude')]
-    : process.platform === 'win32'
-      ? [path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'Claude')]
-      : [path.join(os.homedir(), '.config', 'Claude')];
-
-  for (const userData of userDataDirs) {
-    if (!fs.existsSync(userData)) continue;
-    const targets = [path.join(userData, 'Service Worker')];
-    const partitions = path.join(userData, 'Partitions');
-    try {
-      for (const name of fs.readdirSync(partitions)) targets.push(path.join(partitions, name, 'Service Worker'));
-    } catch {}
-    for (const dir of targets) {
-      if (!fs.existsSync(dir)) continue;
-      try {
-        fs.rmSync(dir, { recursive: true, force: true });
-        console.log('Cleared cached service workers:', dir);
-      } catch (err) {
-        console.warn(`[Warning] Could not clear ${dir}: ${err.message} - if the tracker shows old behaviour, quit Claude and run the installer again.`);
-      }
-    }
-  }
+  const cleared = updater.clearServiceWorkerCache();
+  for (const dir of cleared) console.log('Cleared cached service workers:', dir);
 }
 
 async function cmdInstall(extensionDir) {
@@ -1892,17 +1714,22 @@ async function cmdInstall(extensionDir) {
 
   if (install.platform === 'darwin') checkMacBundleAccess(install);
   console.log(`Patching ${install.asarPath} ...`);
-  await patchAsar(install.asarPath, extensionDir);
+  const patchResult = await patchAsar(install.asarPath, extensionDir);
+  installUserRuntime(extensionDir);
   clearServiceWorkerCache();
 
   if (install.platform === 'darwin') {
     cleanupMacLeftovers(install.appPath);
-    updateInfoPlistHash(install.appPath, install.asarPath);
-    signMac(install.appPath);
+    if (!patchResult.alreadyPatched) {
+      updateInfoPlistHash(install.appPath, install.asarPath);
+      signMac(install.appPath);
+    } else {
+      console.log('App bundle unchanged; skipping re-sign.');
+    }
   }
 
   if (install.platform === 'win32') {
-    updateWindowsExeIntegrity(install.appPath, install.asarPath);
+    if (!patchResult.alreadyPatched) updateWindowsExeIntegrity(install.appPath, install.asarPath);
     setupWindowsShortcuts(install.appPath);
   }
 
@@ -1920,15 +1747,20 @@ async function cmdPatch(extensionDir) {
     throw new Error('Claude Desktop not found. Use "install" to automatically download and install it.');
   }
   if (install.platform === 'darwin') checkMacBundleAccess(install);
-  await patchAsar(install.asarPath, extensionDir);
+  const patchResult = await patchAsar(install.asarPath, extensionDir);
+  installUserRuntime(extensionDir);
   clearServiceWorkerCache();
   if (install.platform === 'darwin') {
     cleanupMacLeftovers(install.appPath);
-    updateInfoPlistHash(install.appPath, install.asarPath);
-    signMac(install.appPath);
+    if (!patchResult.alreadyPatched) {
+      updateInfoPlistHash(install.appPath, install.asarPath);
+      signMac(install.appPath);
+    } else {
+      console.log('App bundle unchanged; skipping re-sign.');
+    }
   }
   if (install.platform === 'win32') {
-    updateWindowsExeIntegrity(install.appPath, install.asarPath);
+    if (!patchResult.alreadyPatched) updateWindowsExeIntegrity(install.appPath, install.asarPath);
     setupWindowsShortcuts(install.appPath);
   }
   if (!isAsarPatched(install.asarPath)) {
@@ -1944,6 +1776,7 @@ function cmdUnpatch() {
   if (install.platform === 'darwin') checkMacBundleAccess(install);
   unpatchAsar(install.asarPath);
   clearServiceWorkerCache();
+  try { fs.rmSync(updater.ccuRoot(), { recursive: true, force: true }); } catch {}
   if (install.platform === 'darwin') {
     cleanupMacLeftovers(install.appPath);
     updateInfoPlistHash(install.appPath, install.asarPath);
@@ -2025,7 +1858,23 @@ function cmdDelete() {
   }
 
   fs.rmSync(install.appPath, { recursive: true, force: true });
+  try { fs.rmSync(updater.ccuRoot(), { recursive: true, force: true }); } catch {}
   console.log('DELETED:' + install.appPath);
+}
+
+// ─── Offline update (used by tests and by hand) ─────────────
+
+async function cmdUpdate(zipPath, options = {}) {
+  if (!zipPath || !fs.existsSync(zipPath)) {
+    throw new Error('Usage: desktop-injector.js update <package.zip> [--sha256 <hash>] [--version <version>]');
+  }
+  const result = await updater.applyUpdateZip({
+    zipPath,
+    sha256: options.sha256,
+    version: options.version
+  });
+  console.log(`Updated tracker files to ${result.version || 'unknown version'}. Restart Claude Desktop to use them.`);
+  return result;
 }
 
 // ─── CLI Entrypoint ─────────────────────────────────────────
@@ -2078,9 +1927,13 @@ async function runMacInstaller(cmd, extensionDir) {
 }
 
 if (require.main === module) {
-  const [,, cmd, arg1, workerFlag] = process.argv;
+  const [, , cmd, arg1, ...rest] = process.argv;
   const extDir = arg1 || __dirname;
-  const macWorker = os.platform() === 'darwin' && workerFlag === '--mac-install-worker';
+  const flag = (name, fallback = null) => {
+    const i = rest.indexOf(name);
+    return i >= 0 && rest[i + 1] ? rest[i + 1] : fallback;
+  };
+  const macWorker = os.platform() === 'darwin' && rest.includes('--mac-install-worker');
 
   (async () => {
     if (os.platform() === 'darwin' && !macWorker && ['install', 'patch', 'unpatch'].includes(cmd)) {
@@ -2108,6 +1961,10 @@ if (require.main === module) {
         if (macWorker) return;
         process.exit(0);
         break;
+      case 'update':
+        await cmdUpdate(arg1, { sha256: flag('--sha256'), version: flag('--version') });
+        process.exit(0);
+        break;
       case 'check':
         cmdCheck();
         break;
@@ -2124,6 +1981,7 @@ if (require.main === module) {
   node desktop-injector.js install [extensionDir]
   node desktop-injector.js patch   [extensionDir]
   node desktop-injector.js unpatch
+  node desktop-injector.js update  <package.zip> [--sha256 <hash>] [--version <version>]
   node desktop-injector.js check
   node desktop-injector.js locate
   node desktop-injector.js delete`);
@@ -2151,5 +2009,7 @@ module.exports = {
   updateInfoPlistHash,
   cmdLocate,
   cmdDelete,
+  cmdUpdate,
+  installUserRuntime,
   MARKER
 };

@@ -52,7 +52,7 @@ Install [Node.js](https://nodejs.org) if needed, then paste this into Terminal:
 
 The installer fetches the extension from GitHub and restarts Claude Desktop after installation.
 
-For a double-click install, use **Install.app** from the Mac installer ZIP.
+For a double-click launcher, keep **Install.app** next to **`install.command`** and open the app. It simply opens the same CLI installer in Terminal.
 
 To remove it, double-click **Uninstall.app** or run **`uninstall.command`**. This performs a full, clean uninstall of Claude Desktop rather than trying to patch it back — reinstall fresh from [claude.ai/download](https://claude.ai/download) afterward if you want to keep using Claude without the tracker.
 
@@ -66,7 +66,7 @@ Install [Node.js](https://nodejs.org) if needed, then paste this into PowerShell
 
 The installer fetches the extension from GitHub and restarts Claude Desktop after installation.
 
-For a double-click install, use **Install.exe**.
+For a double-click launcher, keep **Install.exe** next to **`install.bat`** and run the executable. It launches the same command-line installer.
 
 To remove it, run **`uninstall.bat`** — this fully uninstalls Claude Desktop rather than trying to patch it back; grab a fresh copy from [claude.ai/download](https://claude.ai/download) afterward if you want to keep using it.
 
@@ -74,7 +74,11 @@ To remove it, run **`uninstall.bat`** — this fully uninstalls Claude Desktop r
 
 ### Updating
 
-The tracker checks this repo's [latest release](https://github.com/abdullah-alhar/claude-count-usage/releases/latest) every 12 hours (turn this off under **Settings → Updates**, or use **Check for updates now**). To update, rerun the install command for your platform.
+The tracker checks this repo's [latest release](https://github.com/abdullah-alhar/claude-count-usage/releases/latest) every 12 hours (turn this off under **Settings → Updates**, or use **Check for updates now**). When a release includes an update package, **Settings → Updates → Update now** downloads it, verifies its SHA-256, installs it and restarts Claude automatically — no browser download, no installer, no Terminal.
+
+The tracker lives in your own user folder (`~/Library/Application Support/ClaudeCountUsage` on macOS, `%APPDATA%\ClaudeCountUsage` on Windows), so updates never touch the signed Claude.app bundle and never ask for an admin password.
+
+If you are on a version older than 1.7, run the installer once more to switch to this layout; after that, updates are one click.
 
 **When Claude Desktop itself updates**, the update replaces the patched app with the official one, so the usage bars disappear after the restart that installs it. Run the installer again to bring them back. The tracker shows a notification when a Claude update has been downloaded.
 
@@ -85,6 +89,10 @@ The tracker checks this repo's [latest release](https://github.com/abdullah-alha
 **Slow start or black screen on Windows?** Since v1.4 every launch writes a timing log to `%LOCALAPPDATA%\Claude\logs\ccu-startup.log` (if it isn't there, check `%APPDATA%\Claude\logs`). Please attach that file and `main.log` from the same folder when you report it. The log shows where the time went: before the app started at all, before the window opened, or while claude.ai loaded. Note that patching changes `claude.exe`, so it is no longer signed by Anthropic, and antivirus software may scan it more thoroughly than the official build.
 
 ---
+
+## Building an update
+
+`scripts/build-package.js` produces the `ccu-extension.zip` consumed by the in-app updater, and `scripts/make-manifest.js` writes the release's checksummed `latest.json`. `scripts/build-cli-launchers.sh` rebuilds the lightweight Mac app that opens `install.command`; `Install.exe` similarly opens `install.bat`. Pushing a `v*` tag publishes the updater and both CLI-launcher ZIPs.
 
 ## Features
 

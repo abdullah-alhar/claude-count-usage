@@ -1,11 +1,12 @@
 {
   "name": "claude-count-usage",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "Track your Claude.ai session and weekly usage in the Claude Desktop app.",
   "private": true,
   "scripts": {
-    "test": "node tests/usage-notice.test.js && node tests/settings-and-coldstart.test.js && node tests/sse-stream.test.js && node tests/bard-timeline.test.js",
-    "build": "node scripts/build-dataclasses.js"
+    "test": "node tests/usage-notice.test.js && node tests/settings-and-coldstart.test.js && node tests/sse-stream.test.js && node tests/bard-timeline.test.js && node tests/updater.test.js",
+    "build": "node scripts/build-dataclasses.js",
+    "set-version": "node scripts/set-version.js"
   },
   "author": "Abdullah Alhar",
   "license": "MIT"

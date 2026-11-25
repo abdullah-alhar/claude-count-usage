@@ -757,6 +757,40 @@
     gap: 10px;
 }
 
+.ut-settings-update-notes {
+    font-size: 11px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    max-height: 72px;
+    overflow: auto;
+}
+
+.ut-settings-update-action {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.ut-settings-update-progress-bar {
+    height: 6px;
+    border-radius: 3px;
+    overflow: hidden;
+    background: color-mix(in srgb, var(--ut-blue) 18%, transparent);
+}
+
+.ut-settings-update-progress-fill {
+    width: 0%;
+    height: 100%;
+    border-radius: 3px;
+    background: var(--ut-blue);
+    transition: width 180ms ease-out;
+}
+
+.ut-settings-update-progress-text {
+    margin-top: 4px;
+    font-size: 11px;
+}
+
 /* Debug logs */
 .ut-settings-log-view {
     max-height: 180px;

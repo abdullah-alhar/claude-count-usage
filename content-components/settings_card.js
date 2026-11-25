@@ -58,6 +58,12 @@ class SettingsCard {
 		this.isOpen = false;
 		this.elements = null;
 		this.lastPosition = null;
+		this.lastStatus = null;
+		this.updateAction = null;
+		this._onUpdateState = (event) => this.renderUpdateProgress(event.detail || {});
+		if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+			window.addEventListener('ccuUpdateState', this._onUpdateState);
+		}
 		this._onEsc = (e) => { if (e.key === 'Escape') this.close(); };
 		this._onClickOutside = (e) => {
 			if (this.elements && !this.elements.card.contains(e.target)) this.close();
@@ -405,6 +411,8 @@ class SettingsCard {
 		updateInfo.innerHTML = '';
 		updateCallout.innerHTML = '';
 		updateCallout.style.display = 'none';
+		this.updateAction = null;
+		this.lastStatus = status;
 		// The version lives in the header; the row itself only says where things stand.
 		headerVersion.textContent = currentVersion ? `v${currentVersion}` : '';
 		headerVersion.title = localize('settings.update_version', { version: currentVersion || '?' });
@@ -430,18 +438,45 @@ class SettingsCard {
 
 		if (!(status?.updateAvailable && status.latestVersion)) return;
 
+		this.lastStatus = status;
 		const callout = this.el('div', 'ut-settings-update-callout');
 		const versions = this.el('div', 'ut-settings-update-versions text-text-100');
 		versions.appendChild(this.el('span', 'text-text-400', currentVersion));
 		versions.appendChild(this.el('span', 'ut-settings-update-arrow', '→'));
 		versions.appendChild(this.el('span', 'ut-settings-update-latest', status.latestVersion));
 		callout.appendChild(versions);
-		callout.appendChild(this.el('div', 'ut-settings-hint text-text-300', localize(`settings.update_how_${detectInstallPlatform()}`)));
+		if (status.notes) {
+			callout.appendChild(this.el('div', 'ut-settings-update-notes text-text-300', status.notes));
+		}
+
+		// In-place update: the patched main process downloads, verifies and installs the package,
+		// then restarts Claude. Only offered when the release ships a signed package manifest.
+		if (status.extension && isSafeReleaseUrl(status.extension.url)) {
+			const action = this.el('div', 'ut-settings-update-action');
+			const updateNowBtn = this.createButton(localize('settings.update_now'), 'primary', () => this.startUpdate());
+			const progress = this.el('div', 'ut-settings-update-progress');
+			progress.style.display = 'none';
+			const progressBar = this.el('div', 'ut-settings-update-progress-bar');
+			const progressFill = this.el('div', 'ut-settings-update-progress-fill');
+			progressBar.appendChild(progressFill);
+			const progressText = this.el('div', 'ut-settings-update-progress-text text-text-300');
+			progress.appendChild(progressBar);
+			progress.appendChild(progressText);
+			action.appendChild(updateNowBtn);
+			action.appendChild(progress);
+			callout.appendChild(action);
+			this.updateAction = { button: updateNowBtn, progress, fill: progressFill, text: progressText };
+		} else {
+			this.updateAction = null;
+			callout.appendChild(this.el('div', 'ut-settings-hint text-text-300', localize(`settings.update_how_${detectInstallPlatform()}`)));
+		}
 
 		const links = this.el('div', 'ut-settings-update-links');
 		const downloadUrl = isSafeReleaseUrl(status.downloadUrl) ? status.downloadUrl : status.releaseUrl;
-		if (isSafeReleaseUrl(downloadUrl)) {
-			links.appendChild(this.createLink(localize('settings.update_download', { version: status.latestVersion }), downloadUrl, 'ut-settings-btn ut-settings-btn-primary'));
+		// The installer link is only a compatibility fallback for old releases. When an automatic
+		// package exists, "Update now" is the sole update action and never opens a browser.
+		if (!status.extension && isSafeReleaseUrl(downloadUrl)) {
+			links.appendChild(this.createLink(localize('settings.update_download', { version: status.latestVersion }), downloadUrl, 'ut-settings-btn ut-settings-btn-secondary'));
 		}
 		if (isSafeReleaseUrl(status.releaseUrl) && status.releaseUrl !== downloadUrl) {
 			links.appendChild(this.createLink(localize('settings.update_release_notes'), status.releaseUrl, 'ut-settings-link'));
@@ -449,6 +484,72 @@ class SettingsCard {
 		callout.appendChild(links);
 		updateCallout.appendChild(callout);
 		updateCallout.style.display = '';
+	}
+
+	// Progress events come from the main process as `ccuUpdateState` window events (see
+	// wrapper-runtime.js). Rendered into the callout created by renderUpdateStatus().
+	renderUpdateProgress(detail) {
+		const action = this.updateAction;
+		if (!action || !this.elements) return;
+		const { button, progress, fill, text } = action;
+		const phase = detail.phase || '';
+		progress.style.display = 'block';
+
+		if (phase === 'error') {
+			fill.style.width = '0%';
+			fill.classList.remove('is-active');
+			text.textContent = localize('settings.update_failed') + (detail.message ? ` (${detail.message})` : '');
+			text.style.color = RED_WARNING;
+			button.disabled = false;
+			button.textContent = localize('settings.update_retry');
+			if (this.elements.updateCheckBtn) this.elements.updateCheckBtn.disabled = false;
+			return;
+		}
+
+		text.style.color = '';
+		button.disabled = true;
+		const percent = Math.max(0, Math.min(100, Number(detail.percent) || 0));
+		fill.style.width = percent + '%';
+
+		if (phase === 'downloading') {
+			text.textContent = localize('settings.update_downloading', { percent });
+			button.textContent = localize('settings.update_in_progress');
+		} else if (phase === 'verifying') {
+			text.textContent = localize('settings.update_verifying');
+			button.textContent = localize('settings.update_in_progress');
+		} else if (phase === 'installing') {
+			text.textContent = localize('settings.update_installing');
+			button.textContent = localize('settings.update_in_progress');
+		} else if (phase === 'restarting') {
+			const seconds = Number(detail.secondsLeft) || 0;
+			text.textContent = localize('settings.update_restarting', { seconds });
+			button.textContent = localize('settings.update_in_progress');
+		} else if (phase === 'starting') {
+			text.textContent = localize('settings.update_starting');
+			button.textContent = localize('settings.update_in_progress');
+		}
+	}
+
+	async startUpdate() {
+		const action = this.updateAction;
+		if (!action || action.button.disabled) return;
+		action.button.disabled = true;
+		if (this.elements?.updateCheckBtn) this.elements.updateCheckBtn.disabled = true;
+		this.renderUpdateProgress({ phase: 'starting', percent: 0 });
+
+		try {
+			const result = await sendBackgroundMessage({ type: 'applyUpdate' });
+			if (!result || !result.ok) {
+				this.renderUpdateProgress({
+					phase: 'error',
+					message: localize(result?.error === 'no-package' ? 'settings.update_no_package' : 'settings.update_bridge_unavailable')
+				});
+			}
+			// On success the main process sends progress events, then restarts Claude.
+		} catch (error) {
+			await Log('warn', 'Settings: Failed to start the update:', error);
+			this.renderUpdateProgress({ phase: 'error', message: String(error?.message || error) });
+		}
 	}
 
 	createLink(text, href, className) {

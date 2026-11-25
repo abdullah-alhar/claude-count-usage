@@ -66,6 +66,8 @@ if errorlevel 1 (
 set "EXT_DIR=%TMP_DIR%\claude-count-usage-main"
 if not exist "%EXT_DIR%\manifest_electron.json" goto :missing_files
 if not exist "%EXT_DIR%\desktop-injector.js" goto :missing_files
+if not exist "%EXT_DIR%\wrapper-runtime.js" goto :missing_files
+if not exist "%EXT_DIR%\ccu-update.js" goto :missing_files
 echo [OK] Downloaded extension files from GitHub
 
 :: ── 3. Configure manifest and dataclasses ───────────────────────
