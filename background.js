@@ -6,7 +6,7 @@ import { getStrategy } from './bg-components/container-strategy.js';
 import { UsageData, modelFamilyFromVersion, defaultModelForTier, defaultModelVersionForTier } from './shared/dataclasses.js';
 import { translate, normalizeLocale } from './shared/localization.js';
 import { scheduleAlarm, getAlarm, clearAlarm, rearmAlarms, createNotification, requestSelfUpdate } from './bg-components/electron-compat.js';
-import { checkForUpdates, detectPlatform, isStatusStale, UPDATE_CHECK_INTERVAL_MS, UPDATE_STATUS_KEY, AUTO_UPDATE_CHECK_KEY } from './bg-components/update-check.js';
+import { checkForUpdates, compareVersions, detectPlatform, isStatusStale, UPDATE_CHECK_INTERVAL_MS, UPDATE_STATUS_KEY, AUTO_UPDATE_CHECK_KEY } from './bg-components/update-check.js';
 import { invalidateAccountSettings, invalidateProfileTokens, storeSseUsage } from './bg-components/claude-api.js';
 
 const INTERCEPT_PATTERNS = {
@@ -1113,30 +1113,33 @@ messageRegistry.register('electronTabActivated', () => {
 	return true;
 });
 
-messageRegistry.register('getUpdateStatus', async () => ({
-	currentVersion: browser.runtime.getManifest().version,
-	autoCheck: await getStorageValue(AUTO_UPDATE_CHECK_KEY, true),
-	status: await getStorageValue(UPDATE_STATUS_KEY, null)
-}));
+messageRegistry.register('getUpdateStatus', async () => {
+	const currentVersion = browser.runtime.getManifest().version;
+	const autoCheck = await getStorageValue(AUTO_UPDATE_CHECK_KEY, true);
+	const status = await getStorageValue(UPDATE_STATUS_KEY, null);
+	if (autoCheck && (isStatusStale(status, Date.now()) || status?.currentVersion !== currentVersion)) {
+		return { currentVersion, autoCheck, status: await runUpdateCheck() };
+	}
+	return {
+		currentVersion,
+		autoCheck,
+		status: status && { ...status, updateAvailable: compareVersions(status.latestVersion, currentVersion) > 0 }
+	};
+});
 
-// Manual check: deliberately ignores the automatic-check toggle and the staleness window.
 messageRegistry.register('checkForUpdatesNow', () => runUpdateCheck());
 
-// Hands the update package to the patched main process. Returns a reason instead of throwing so
-// the settings card can fall back to the installer download when the bridge is unavailable (web
-// install, older desktop patch, or no claude.ai tab open).
-messageRegistry.register('applyUpdate', async () => {
+messageRegistry.register('applyUpdate', async (message, sender) => {
 	const status = await getStorageValue(UPDATE_STATUS_KEY, null);
-	const extension = status?.extension;
-	if (!extension?.url || !extension?.sha256) {
-		return { ok: false, error: 'no-package' };
+	const currentVersion = browser.runtime.getManifest().version;
+	if (!status?.extension || compareVersions(status.latestVersion, currentVersion) <= 0) {
+		return { ok: false, error: 'no-package', message: status?.packageError };
 	}
-	const sent = await requestSelfUpdate({
-		url: extension.url,
-		sha256: extension.sha256,
-		version: status.latestVersion || null
-	});
-	return sent ? { ok: true, version: status.latestVersion || null } : { ok: false, error: 'bridge-unavailable' };
+	if (message.version !== status.latestVersion) {
+		return { ok: false, message: 'The release changed. Check for updates again.' };
+	}
+	const sent = await requestSelfUpdate({ ...status.extension, version: status.latestVersion }, sender?.tab?.id);
+	return sent ? { ok: true } : { ok: false, error: 'bridge-unavailable' };
 });
 
 messageRegistry.register('setAutoUpdateCheck', async (message) => {

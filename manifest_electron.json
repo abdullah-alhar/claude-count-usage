@@ -47,7 +47,8 @@
 		"https://raw.githubusercontent.com/*",
 		"https://github.com/*",
 		"https://api.github.com/*",
-		"https://objects.githubusercontent.com/*"
+		"https://objects.githubusercontent.com/*",
+		"https://release-assets.githubusercontent.com/*"
 	],
 	"web_accessible_resources": [
 		{
