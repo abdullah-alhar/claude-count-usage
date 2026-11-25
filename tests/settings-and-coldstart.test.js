@@ -24,6 +24,7 @@
 const fs   = require('fs');
 const path = require('path');
 const vm   = require('vm');
+const { pathToFileURL } = require('url');
 
 const rootDir = path.join(__dirname, '..');
 
@@ -979,7 +980,7 @@ console.log('\n=== 11. getSeverityColor() three-tier helper ===');
 // ─── 12. Update check: version comparison and storage (update-check.js) ─────
 console.log('\n=== 12. update-check.js ===');
 {
-	const uc = await import(path.join(rootDir, 'bg-components', 'update-check.js'));
+	const uc = await import(pathToFileURL(path.join(rootDir, 'bg-components', 'update-check.js')).href);
 
 	assert(uc.RELEASES_API_URL === 'https://api.github.com/repos/abdullah-alhar/claude-count-usage/releases/latest',
 		'checks exactly this repo\'s latest-release endpoint');
@@ -1069,7 +1070,7 @@ console.log('\n=== 13. Automatic update check toggle ===');
 	const runScheduled = new Function('getStorageValue', 'isStatusStale', 'runUpdateCheck', 'Log',
 		'AUTO_UPDATE_CHECK_KEY', 'UPDATE_STATUS_KEY',
 		'"use strict"; return (async function(){ ' + scheduledSrc + ' })();');
-	const uc = await import(path.join(rootDir, 'bg-components', 'update-check.js'));
+	const uc = await import(pathToFileURL(path.join(rootDir, 'bg-components', 'update-check.js')).href);
 	const go = () => runScheduled(async (k, d) => (k in store ? store[k] : d), uc.isStatusStale,
 		async () => { checks++; return { checkedAt: Date.now() }; }, async () => {}, 'autoUpdateCheck', 'updateCheckStatus');
 
@@ -1374,4 +1375,3 @@ runAll().catch(err => {
 	console.error('Unhandled error in test suite:', err);
 	process.exit(1);
 });
-
